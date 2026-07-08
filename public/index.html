@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Shopee Creator Stats</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:           #0b0d12;
+      --surface:      #13161f;
+      --surface2:     #1a1e2b;
+      --surface3:     #1f2436;
+      --border:       #242840;
+      --border2:      #2e3450;
+      --orange:       #EE4D2D;
+      --orange-dim:   rgba(238,77,45,0.12);
+      --orange-glow:  rgba(238,77,45,0.28);
+      --green:        #22c55e;
+      --green-dim:    rgba(34,197,94,0.1);
+      --yellow:       #f59e0b;
+      --red:          #ef4444;
+      --blue:         #3b82f6;
+      --blue-dim:     rgba(59,130,246,0.12);
+      --text:         #e2e8f0;
+      --text-muted:   #64748b;
+      --text-dim:     #94a3b8;
+      --radius:       10px;
+      --font:         -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --font-mono:    "SF Mono", "Consolas", monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+
+    /* ── HEADER ── */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 28px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 200;
+      backdrop-filter: blur(8px);
+    }
+    .header-logo {
+      width: 34px; height: 34px;
+      background: linear-gradient(135deg, #EE4D2D, #ff6b4a);
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 17px; flex-shrink: 0;
+      box-shadow: 0 2px 12px var(--orange-glow);
+    }
+    .header-title { font-size: 15px; font-weight: 700; letter-spacing: -0.3px; }
+    .header-sub   { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+    .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .header-time  { font-size: 12px; color: var(--text-muted); }
+
+    .refresh-btn {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--surface2);
+      border: 1px solid var(--border2);
+      border-radius: 7px;
+      padding: 6px 13px;
+      font-size: 12px; font-weight: 500;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .refresh-btn:hover { border-color: var(--orange); color: var(--orange); }
+    .refresh-btn svg { transition: transform 0.3s; }
+    .refresh-btn.spinning svg { animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── MAIN LAYOUT ── */
+    .main { padding: 24px 28px 40px; max-width: 1520px; margin: 0 auto; }
+
+    /* ── STATE ── */
+    .state-center {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      height: 60vh; gap: 16px;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--orange);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* ── SUMMARY BAR ── */
+    .summary-bar {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .summary-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 18px;
+      transition: border-color 0.15s;
+    }
+    .summary-card:hover { border-color: var(--border2); }
+    .summary-card-label {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .summary-card-value {
+      font-size: 22px; font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.5px;
+    }
+    .summary-card-value.orange { color: var(--orange); }
+    .summary-card-value.green  { color: var(--green); }
+    .summary-card-value.blue   { color: var(--blue); }
+    .summary-card-sub {
+      font-size: 11px; color: var(--text-muted); margin-top: 3px;
+    }
+
+    /* ── ACCOUNT CARDS ── */
+    .section-header {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 12px;
+    }
+    .section-toggle {
+      display: flex; align-items: center; gap: 8px;
+      cursor: pointer; user-select: none;
+      background: none; border: none; padding: 0;
+      color: inherit;
+    }
+    .section-toggle:hover .section-label { color: var(--text-dim); }
+    .section-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.09em;
+      text-transform: uppercase; color: var(--text-muted);
+      transition: color 0.15s;
+    }
+    .section-chevron {
+      color: var(--text-muted);
+      transition: transform 0.25s cubic-bezier(0.4,0,0.2,1);
+      display: flex; align-items: center;
+    }
+    .section-chevron.open { transform: rotate(180deg); }
+    .section-count {
+      font-size: 10px; font-weight: 600;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1px 7px;
+      color: var(--text-muted);
+      letter-spacing: 0;
+      text-transform: none;
+    }
+    .section-line {
+      flex: 1; height: 1px; background: var(--border);
+    }
+
+    /* Collapsible wrapper */
+    .collapse-wrap {
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: grid-template-rows 0.28s cubic-bezier(0.4,0,0.2,1),
+                  opacity 0.22s ease;
+      opacity: 1;
+    }
+    .collapse-wrap.collapsed {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    .collapse-inner { overflow: hidden; }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+      padding-top: 2px;
+    }
+    .account-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      cursor: pointer;
+      transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
+      position: relative;
+      overflow: hidden;
+    }
+    .account-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: transparent;
+      transition: background 0.15s;
+    }
+    .account-card:hover { border-color: var(--border2); }
+    .account-card.active { border-color: var(--orange); background: var(--orange-dim); }
+    .account-card.active::before { background: var(--orange); }
+    .account-card.error-card { border-color: rgba(239,68,68,0.3); }
+    .card-header {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 14px;
+    }
+    .card-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 5px var(--green);
+      flex-shrink: 0;
+    }
+    .card-dot.err { background: var(--red); box-shadow: 0 0 5px var(--red); }
+    .card-name { font-size: 13px; font-weight: 700; flex: 1; }
+    .live-badge {
+      font-size: 10px; font-weight: 700; color: var(--green);
+      background: var(--green-dim);
+      border: 1px solid rgba(34,197,94,0.25);
+      border-radius: 4px; padding: 2px 6px;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .live-badge::before {
+      content: ""; width: 5px; height: 5px;
+      border-radius: 50%; background: var(--green);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    .card-error { font-size: 12px; color: var(--red); }
+    .card-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .card-stat-label {
+      font-size: 10px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .card-stat-value {
+      font-size: 17px; font-weight: 700;
+      font-variant-numeric: tabular-nums; margin-top: 2px;
+    }
+    .card-stat-value.orange { color: var(--orange); }
+    .card-stat-value.green  { color: var(--green); }
+
+    /* ── TOOLBAR (search + filters) ── */
+    .toolbar {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    /* Search */
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 180px;
+      max-width: 280px;
+    }
+    .search-icon {
+      position: absolute; left: 10px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      pointer-events: none;
+      display: flex;
+    }
+    .search-input {
+      width: 100%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 7px 10px 7px 32px;
+      font-size: 13px;
+      color: var(--text);
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .search-input::placeholder { color: var(--text-muted); }
+    .search-input:focus { border-color: var(--orange); }
+
+    /* Divider */
+    .toolbar-divider {
+      width: 1px; height: 28px;
+      background: var(--border);
+    }
+
+    /* Filter pills */
+    .filter-group { display: flex; align-items: center; gap: 6px; }
+    .filter-group-label {
+      font-size: 11px; color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .pill {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 11px;
+      font-size: 12px; font-weight: 500;
+      color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.12s;
+      white-space: nowrap;
+    }
+    .pill:hover { border-color: var(--border2); color: var(--text); }
+    .pill.active { border-color: var(--orange); color: var(--orange); background: var(--orange-dim); }
+    .pill.active-blue { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+
+    /* Date inputs */
+    .date-input {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 5px 10px;
+      font-size: 12px;
+      color: var(--text);
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .date-input:focus { border-color: var(--orange); }
+    .date-input::-webkit-calendar-picker-indicator { filter: invert(0.5); cursor: pointer; }
+
+    /* Sort select */
+    .sort-select {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 5px 26px 5px 10px;
+      font-size: 12px;
+      color: var(--text-dim);
+      outline: none;
+      cursor: pointer;
+      transition: border-color 0.15s;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2364748b'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 8px center;
+    }
+    .sort-select:focus { border-color: var(--orange); }
+    .sort-select option { background: var(--surface2); }
+
+    /* Reset */
+    .reset-btn {
+      background: none; border: none;
+      color: var(--text-muted); font-size: 12px;
+      cursor: pointer; padding: 4px 8px;
+      border-radius: 5px;
+      transition: color 0.12s;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .reset-btn:hover { color: var(--red); }
+
+    /* Result info row */
+    .result-row {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 10px;
+    }
+    .result-count {
+      font-size: 12px; color: var(--text-muted);
+    }
+    .result-count b { color: var(--text); }
+    .sort-dir-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 4px 8px;
+      font-size: 12px; color: var(--text-dim);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+    .sort-dir-btn:hover { border-color: var(--orange); color: var(--orange); }
+
+    /* ── TABLE ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; min-width: 900px; }
+    thead tr { background: var(--surface2); }
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 10px; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      color: var(--text-muted);
+      white-space: nowrap;
+      border-bottom: 1px solid var(--border);
+      user-select: none;
+    }
+    th.sortable { cursor: pointer; }
+    th.sortable:hover { color: var(--text); }
+    th.sort-active { color: var(--orange); }
+    .sort-arrow { display: inline-block; margin-left: 4px; font-size: 10px; }
+    th.right, td.right { text-align: right; }
+    td {
+      padding: 10px 14px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.015); }
+
+    .badge-live {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: var(--green-dim); color: var(--green);
+      border: 1px solid rgba(34,197,94,0.3);
+      border-radius: 4px; padding: 2px 7px;
+      font-size: 11px; font-weight: 700;
+    }
+    .dot-pulse {
+      width: 6px; height: 6px;
+      border-radius: 50%; background: var(--green);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+    .badge-done {
+      display: inline-block;
+      background: var(--surface2); color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 4px; padding: 2px 7px;
+      font-size: 11px;
+    }
+    .account-tag {
+      background: var(--orange-dim); color: var(--orange);
+      border: 1px solid rgba(238,77,45,0.22);
+      border-radius: 4px; padding: 2px 8px;
+      font-size: 11px; font-weight: 700; white-space: nowrap;
+    }
+    .session-title { font-weight: 500; color: var(--text); margin-bottom: 2px; }
+    .session-time  { font-size: 11px; color: var(--text-muted); }
+    .num { font-variant-numeric: tabular-nums; }
+    .num.orange { color: var(--orange); }
+    .num.green  { color: var(--green); font-weight: 600; }
+    .num.big    { font-weight: 600; }
+    .empty-row td {
+      text-align: center; color: var(--text-muted);
+      padding: 48px 14px;
+      font-size: 13px;
+    }
+    .empty-icon { font-size: 32px; display: block; margin-bottom: 10px; }
+
+    /* ── PAGINATION ── */
+    .pagination {
+      display: flex; align-items: center; justify-content: center;
+      gap: 6px; margin-top: 16px;
+    }
+    .page-btn {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px; padding: 5px 10px;
+      font-size: 12px; color: var(--text-dim);
+      cursor: pointer; min-width: 34px;
+      text-align: center; transition: all 0.12s;
+    }
+    .page-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); }
+    .page-btn.active { background: var(--orange); border-color: var(--orange); color: #fff; font-weight: 700; }
+    .page-btn:disabled { opacity: 0.35; cursor: default; }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 900px) {
+      .main { padding: 16px 16px 32px; }
+      .header { padding: 0 16px; }
+      .summary-bar { grid-template-columns: repeat(2, 1fr); }
+      .toolbar { flex-direction: column; align-items: stretch; }
+      .search-wrap { max-width: 100%; }
+    }
+    @media (max-width: 600px) {
+      .summary-bar { grid-template-columns: 1fr 1fr; }
+      .cards-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useCallback } = React;
+
+    /* ── FORMAT HELPERS ── */
+    const fmtVND = v => v ? new Intl.NumberFormat("vi-VN").format(v) + " ₫" : "—";
+    const fmtNum = v => v != null ? new Intl.NumberFormat("vi-VN").format(v) : "—";
+    const fmtPct = v => v != null ? (v * 100).toFixed(1) + "%" : "—";
+    const fmtTime = raw => {
+      if (!raw) return "—";
+      // Chuẩn hóa: seconds → ms
+      const ms = raw < 1e12 ? raw * 1000 : raw;
+      const d = new Date(ms);
+      return d.toLocaleDateString("vi-VN") + " " + d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    };
+    const fmtDuration = ms => {
+      if (!ms) return "—";
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      return h > 0 ? `${h}g ${m}p` : `${m} phút`;
+    };
+    const calcLive = rawStart => {
+      if (!rawStart) return "—";
+      // API có thể trả về seconds (10 chữ số) hoặc milliseconds (13 chữ số)
+      const startMs = rawStart < 1e12 ? rawStart * 1000 : rawStart;
+      const ms = Date.now() - startMs;
+      if (ms < 0) return "—";
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      return h > 0
+        ? `${h}g ${String(m).padStart(2,"0")}p ${String(s).padStart(2,"0")}s`
+        : `${m}p ${String(s).padStart(2,"0")}s`;
+    };
+
+    /* Đồng hồ đếm realtime cho phiên đang LIVE */
+    function LiveDuration({ startTime }) {
+      const [now, setNow] = useState(Date.now());
+      useEffect(() => {
+        const id = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(id);
+      }, []);
+      if (!startTime) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+      const startMs = startTime < 1e12 ? startTime * 1000 : startTime;
+      const ms = now - startMs;
+      if (ms < 0) return <span style={{ color: "var(--text-muted)" }}>—</span>;
+      const h = Math.floor(ms / 3600000);
+      const m = Math.floor((ms % 3600000) / 60000);
+      const s = Math.floor((ms % 60000) / 1000);
+      const text = h > 0
+        ? `${h}g ${String(m).padStart(2,"0")}p ${String(s).padStart(2,"0")}s`
+        : `${m}p ${String(s).padStart(2,"0")}s`;
+      return (
+        <span style={{ color: "var(--green)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+          {text}
+        </span>
+      );
+    }
+    const fmtK = v => {
+      if (!v) return "—";
+      if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + "M";
+      if (v >= 1_000)     return Math.round(v / 1_000) + "K";
+      return fmtNum(v);
+    };
+
+    const sumField = (sessions, field) => sessions.reduce((a, s) => a + (s[field] || 0), 0);
+
+    /* ── SVG ICONS ── */
+    const IcoSearch   = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>;
+    const IcoRefresh  = () => <svg width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>;
+    const IcoX        = () => <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    const IcoChevron  = () => <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>;
+
+    const PAGE_SIZE = 20;
+
+    /* ── ACCOUNT CARD ── */
+    function AccountCard({ account, active, onClick }) {
+      const { key, error, sessions = [] } = account;
+      const totalViews  = sumField(sessions, "views");
+      const totalSales  = sumField(sessions, "confirmedSales");
+      const totalOrders = sumField(sessions, "confirmedOrders");
+      const liveCount   = sessions.filter(s => s.status === 1).length;
+      return (
+        <div
+          className={`account-card ${active ? "active" : ""} ${error ? "error-card" : ""}`}
+          onClick={onClick}
+          title={active ? "Bỏ lọc tài khoản này" : "Lọc theo tài khoản này"}
+        >
+          <div className="card-header">
+            <div className={`card-dot ${error ? "err" : ""}`} />
+            <div className="card-name">{key}</div>
+            {liveCount > 0 && <span className="live-badge">{liveCount} LIVE</span>}
+          </div>
+          {error
+            ? <div className="card-error">⚠ {error}</div>
+            : (
+              <div className="card-stats">
+                <div>
+                  <div className="card-stat-label">Phiên live</div>
+                  <div className="card-stat-value">{sessions.length}</div>
+                </div>
+                <div>
+                  <div className="card-stat-label">Lượt xem</div>
+                  <div className="card-stat-value">{fmtK(totalViews)}</div>
+                </div>
+                <div>
+                  <div className="card-stat-label">Đơn XN</div>
+                  <div className="card-stat-value orange">{fmtNum(totalOrders)}</div>
+                </div>
+                <div>
+                  <div className="card-stat-label">Doanh thu</div>
+                  <div className="card-stat-value green" style={{ fontSize: 14 }}>
+                    {fmtK(totalSales)}
+                  </div>
+                </div>
+              </div>
+            )
+          }
+        </div>
+      );
+    }
+
+    /* ── SESSION ROW ── */
+    function SessionRow({ session, accountKey }) {
+      const isLive = session.status === 1;
+      return (
+        <tr>
+          <td><span className="account-tag">{accountKey}</span></td>
+          <td style={{ maxWidth: 220 }}>
+            <div className="session-title" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {session.title || "Phiên live"}
+            </div>
+            <div className="session-time">{fmtTime(session.startTime)}</div>
+          </td>
+          <td>
+            {isLive
+              ? <span className="badge-live"><span className="dot-pulse" /> LIVE</span>
+              : <span className="badge-done">Đã kết thúc</span>
+            }
+          </td>
+          <td className="num right">{fmtNum(session.views)}</td>
+          <td className="num right">{fmtNum(session.viewers)}</td>
+          <td className="num right">{isLive ? <LiveDuration startTime={session.startTime} /> : fmtDuration(session.duration)}</td>
+          <td className="num right">{fmtNum(session.atc)}</td>
+          <td className="num orange right">{fmtPct(session.conversionRate)}</td>
+          <td className="num right">{fmtNum(session.placedOrders)}</td>
+          <td className="num right">{fmtNum(session.confirmedOrders)}</td>
+          <td className="num green big right">{fmtVND(session.confirmedSales)}</td>
+        </tr>
+      );
+    }
+
+    /* ── TH SORT ── */
+    function SortTh({ label, field, sortField, sortDir, onSort, className = "" }) {
+      const active = sortField === field;
+      return (
+        <th
+          className={`sortable ${active ? "sort-active" : ""} ${className}`}
+          onClick={() => onSort(field)}
+        >
+          {label}
+          <span className="sort-arrow">
+            {active ? (sortDir === "desc" ? " ▼" : " ▲") : " ↕"}
+          </span>
+        </th>
+      );
+    }
+
+    /* ── APP ── */
+    function App() {
+      const [state,        setState]       = useState("loading");
+      const [data,         setData]        = useState([]);
+      const [fetchedAt,    setFetchedAt]   = useState(null);
+      const [errMsg,       setErrMsg]      = useState("");
+      const [spinning,     setSpinning]    = useState(false);
+
+      // Filters
+      const [activeAccount, setActiveAccount] = useState("all");
+      const [searchQ,       setSearchQ]       = useState("");
+      const [statusFilter,  setStatusFilter]  = useState("all"); // all | live | done
+      const [dateFrom,      setDateFrom]      = useState("");
+      const [dateTo,        setDateTo]        = useState("");
+      const [sortField,     setSortField]     = useState("startTime");
+      const [sortDir,       setSortDir]       = useState("desc");
+      const [page,          setPage]          = useState(1);
+      const [showAccounts,  setShowAccounts]  = useState(true);
+
+      /* Load */
+      const load = useCallback(async () => {
+        setState("loading"); setSpinning(true);
+        try {
+          const res  = await fetch("/api/stats");
+          const json = await res.json();
+          if (!json.success) throw new Error(json.error);
+          setData(json.data);
+          setFetchedAt(json.fetchedAt);
+          setState("ok");
+        } catch (e) {
+          setErrMsg(e.message);
+          setState("error");
+        } finally {
+          setSpinning(false);
+        }
+      }, []);
+
+      useEffect(() => { load(); }, []);
+
+      /* Sort handler */
+      const handleSort = field => {
+        if (sortField === field) setSortDir(d => d === "desc" ? "asc" : "desc");
+        else { setSortField(field); setSortDir("desc"); }
+        setPage(1);
+      };
+
+      /* Reset filters */
+      const resetFilters = () => {
+        setSearchQ(""); setStatusFilter("all");
+        setDateFrom(""); setDateTo(""); setPage(1);
+      };
+      const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo;
+
+      /* All valid sessions merged */
+      const allSessions = useMemo(() => {
+        const rows = [];
+        for (const acc of data) {
+          if (acc.error || !acc.sessions?.length) continue;
+          for (const s of acc.sessions) rows.push({ ...s, _accountKey: acc.key });
+        }
+        return rows;
+      }, [data]);
+
+      /* Filtered + sorted sessions */
+      const filteredSessions = useMemo(() => {
+        let rows = allSessions;
+
+        // Account filter
+        if (activeAccount !== "all") rows = rows.filter(s => s._accountKey === activeAccount);
+
+        // Status filter
+        if (statusFilter === "live") rows = rows.filter(s => s.status === 1);
+        if (statusFilter === "done") rows = rows.filter(s => s.status !== 1);
+
+        // Search
+        if (searchQ.trim()) {
+          const q = searchQ.trim().toLowerCase();
+          rows = rows.filter(s =>
+            (s.title || "").toLowerCase().includes(q) ||
+            s._accountKey.toLowerCase().includes(q)
+          );
+        }
+
+        // Date range
+        if (dateFrom) {
+          const from = new Date(dateFrom).setHours(0, 0, 0, 0);
+          rows = rows.filter(s => s.startTime >= from);
+        }
+        if (dateTo) {
+          const to = new Date(dateTo).setHours(23, 59, 59, 999);
+          rows = rows.filter(s => s.startTime <= to);
+        }
+
+        // Sort
+        rows = [...rows].sort((a, b) => {
+          const av = a[sortField] ?? 0;
+          const bv = b[sortField] ?? 0;
+          return sortDir === "desc" ? bv - av : av - bv;
+        });
+
+        return rows;
+      }, [allSessions, activeAccount, statusFilter, searchQ, dateFrom, dateTo, sortField, sortDir]);
+
+      /* Pagination */
+      const totalPages  = Math.max(1, Math.ceil(filteredSessions.length / PAGE_SIZE));
+      const currentPage = Math.min(page, totalPages);
+      const pageRows    = filteredSessions.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+      /* Summary on currently filtered sessions */
+      const summary = useMemo(() => ({
+        sessions:  filteredSessions.length,
+        views:     sumField(filteredSessions, "views"),
+        orders:    sumField(filteredSessions, "confirmedOrders"),
+        sales:     sumField(filteredSessions, "confirmedSales"),
+        live:      filteredSessions.filter(s => s.status === 1).length,
+      }), [filteredSessions]);
+
+      const accounts = useMemo(() => data.filter(a => !a.error && a.sessions?.length), [data]);
+
+      /* Reset page on filter change */
+      useEffect(() => { setPage(1); }, [activeAccount, statusFilter, searchQ, dateFrom, dateTo]);
+
+      /* Pagination helpers */
+      const pageButtons = useMemo(() => {
+        if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+        const pages = new Set([1, totalPages, currentPage]);
+        for (let i = currentPage - 1; i <= currentPage + 1; i++) {
+          if (i >= 1 && i <= totalPages) pages.add(i);
+        }
+        return [...pages].sort((a, b) => a - b);
+      }, [totalPages, currentPage]);
+
+      /* ── STATES ── */
+      if (state === "loading") return (
+        <div className="state-center">
+          <div className="spinner" />
+          <div style={{ color: "var(--text-muted)", fontSize: 13 }}>Đang tải dữ liệu từ tất cả tài khoản...</div>
+        </div>
+      );
+      if (state === "error") return (
+        <div className="state-center">
+          <div style={{ fontSize: 36 }}>⚠️</div>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>Không thể kết nối server</div>
+          <div style={{ color: "var(--text-muted)", fontSize: 12 }}>{errMsg}</div>
+          <button className="refresh-btn" onClick={load} style={{ marginTop: 8 }}>
+            <IcoRefresh /> Thử lại
+          </button>
+        </div>
+      );
+
+      return (
+        <>
+          {/* HEADER */}
+          <header className="header">
+            <div className="header-logo">🛒</div>
+            <div>
+              <div className="header-title">Shopee Creator Stats</div>
+              <div className="header-sub">{data.length} tài khoản • {allSessions.length} phiên live</div>
+            </div>
+            <div className="header-right">
+              {fetchedAt && (
+                <div className="header-time">
+                  Cập nhật lúc {new Date(fetchedAt).toLocaleTimeString("vi-VN")}
+                </div>
+              )}
+              <button className={`refresh-btn ${spinning ? "spinning" : ""}`} onClick={load}>
+                <IcoRefresh /> Làm mới
+              </button>
+            </div>
+          </header>
+
+          <div className="main">
+
+            {/* SUMMARY BAR */}
+            <div className="summary-bar">
+              <div className="summary-card">
+                <div className="summary-card-label">Phiên live hiển thị</div>
+                <div className="summary-card-value">{fmtNum(summary.sessions)}</div>
+                <div className="summary-card-sub">{summary.live > 0 ? `${summary.live} đang LIVE` : "Không có phiên đang LIVE"}</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-card-label">Tổng lượt xem</div>
+                <div className="summary-card-value blue">{fmtK(summary.views)}</div>
+                <div className="summary-card-sub">lượt xem tích lũy</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-card-label">Đơn xác nhận</div>
+                <div className="summary-card-value orange">{fmtNum(summary.orders)}</div>
+                <div className="summary-card-sub">đơn hàng đã chốt</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-card-label">Doanh thu XN</div>
+                <div className="summary-card-value green">{fmtK(summary.sales)}</div>
+                <div className="summary-card-sub">đồng đã xác nhận</div>
+              </div>
+              <div className="summary-card">
+                <div className="summary-card-label">Tài khoản</div>
+                <div className="summary-card-value">{accounts.length}</div>
+                <div className="summary-card-sub">{data.filter(a => a.error).length} lỗi cookie</div>
+              </div>
+            </div>
+
+            {/* ACCOUNT CARDS */}
+            <div className="section-header">
+              <button className="section-toggle" onClick={() => setShowAccounts(v => !v)}>
+                <span className={`section-chevron ${showAccounts ? "open" : ""}`}><IcoChevron /></span>
+                <span className="section-label">Tài khoản</span>
+                <span className="section-count">{data.length}</span>
+              </button>
+              {activeAccount !== "all" && (
+                <span style={{ fontSize: 11, color: "var(--orange)", fontWeight: 600 }}>
+                  · Đang lọc: {activeAccount}
+                  <button
+                    onClick={() => setActiveAccount("all")}
+                    style={{ marginLeft: 6, background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 11 }}
+                    title="Bỏ lọc"
+                  >✕</button>
+                </span>
+              )}
+              <div className="section-line" />
+            </div>
+            <div className={`collapse-wrap ${showAccounts ? "" : "collapsed"}`}>
+              <div className="collapse-inner">
+                <div className="cards-grid">
+                  {data.map(acc => (
+                    <AccountCard
+                      key={acc.key}
+                      account={acc}
+                      active={activeAccount === acc.key}
+                      onClick={() => setActiveAccount(activeAccount === acc.key ? "all" : acc.key)}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* TOOLBAR */}
+            <div className="section-header">
+              <div className="section-label">Chi tiết phiên live</div>
+              <div className="section-line" />
+            </div>
+
+            <div className="toolbar">
+              {/* Search */}
+              <div className="search-wrap">
+                <span className="search-icon"><IcoSearch /></span>
+                <input
+                  className="search-input"
+                  type="text"
+                  placeholder="Tìm theo tiêu đề, tài khoản…"
+                  value={searchQ}
+                  onChange={e => setSearchQ(e.target.value)}
+                />
+              </div>
+
+              <div className="toolbar-divider" />
+
+              {/* Status filter */}
+              <div className="filter-group">
+                <span className="filter-group-label">Trạng thái:</span>
+                {[["all","Tất cả"], ["live","🔴 Đang LIVE"], ["done","Đã kết thúc"]].map(([v, l]) => (
+                  <button
+                    key={v}
+                    className={`pill ${statusFilter === v ? "active" : ""}`}
+                    onClick={() => setStatusFilter(v)}
+                  >{l}</button>
+                ))}
+              </div>
+
+              <div className="toolbar-divider" />
+
+              {/* Date range */}
+              <div className="filter-group">
+                <span className="filter-group-label">Từ:</span>
+                <input
+                  type="date" className="date-input"
+                  value={dateFrom}
+                  onChange={e => setDateFrom(e.target.value)}
+                />
+                <span className="filter-group-label">đến:</span>
+                <input
+                  type="date" className="date-input"
+                  value={dateTo}
+                  onChange={e => setDateTo(e.target.value)}
+                />
+              </div>
+
+              <div className="toolbar-divider" />
+
+              {/* Sort */}
+              <div className="filter-group">
+                <span className="filter-group-label">Sắp xếp:</span>
+                <select
+                  className="sort-select"
+                  value={sortField}
+                  onChange={e => { setSortField(e.target.value); setPage(1); }}
+                >
+                  <option value="startTime">Thời gian bắt đầu</option>
+                  <option value="views">Lượt xem</option>
+                  <option value="viewers">Người xem</option>
+                  <option value="confirmedOrders">Đơn xác nhận</option>
+                  <option value="confirmedSales">Doanh thu</option>
+                  <option value="conversionRate">Tỷ lệ CĐ</option>
+                  <option value="duration">Thời lượng</option>
+                  <option value="atc">Thêm giỏ hàng</option>
+                </select>
+                <button
+                  className="sort-dir-btn"
+                  onClick={() => setSortDir(d => d === "desc" ? "asc" : "desc")}
+                  title={sortDir === "desc" ? "Giảm dần → Tăng dần" : "Tăng dần → Giảm dần"}
+                >
+                  {sortDir === "desc" ? "▼ Giảm" : "▲ Tăng"}
+                </button>
+              </div>
+
+              {/* Reset */}
+              {hasFilters && (
+                <button className="reset-btn" onClick={resetFilters}>
+                  <IcoX /> Xoá bộ lọc
+                </button>
+              )}
+            </div>
+
+            {/* RESULT INFO */}
+            <div className="result-row">
+              <div className="result-count">
+                Hiển thị <b>{pageRows.length}</b> / <b>{filteredSessions.length}</b> phiên live
+                {activeAccount !== "all" && <> · Tài khoản: <b style={{ color: "var(--orange)" }}>{activeAccount}</b></>}
+                {searchQ && <> · Tìm kiếm: <b>"{searchQ}"</b></>}
+              </div>
+              {filteredSessions.length > PAGE_SIZE && (
+                <div className="result-count" style={{ marginLeft: "auto" }}>
+                  Trang {currentPage}/{totalPages}
+                </div>
+              )}
+            </div>
+
+            {/* TABLE */}
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Tài khoản</th>
+                    <th>Phiên live</th>
+                    <th>Trạng thái</th>
+                    <SortTh label="Lượt xem"   field="views"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Người xem"  field="viewers"         sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Thời lượng" field="duration"        sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Thêm giỏ"   field="atc"             sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Tỷ lệ CĐ"   field="conversionRate"  sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Đơn đặt"    field="placedOrders"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Đơn XN"     field="confirmedOrders" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                    <SortTh label="Doanh thu XN" field="confirmedSales" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageRows.length === 0 ? (
+                    <tr className="empty-row">
+                      <td colSpan={11}>
+                        <span className="empty-icon">🔍</span>
+                        {hasFilters
+                          ? "Không tìm thấy phiên live nào phù hợp với bộ lọc hiện tại"
+                          : "Chưa có dữ liệu phiên live nào"}
+                      </td>
+                    </tr>
+                  ) : pageRows.map(s => (
+                    <SessionRow key={`${s._accountKey}-${s.sessionId}`} session={s} accountKey={s._accountKey} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* PAGINATION */}
+            {totalPages > 1 && (
+              <div className="pagination">
+                <button className="page-btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={currentPage === 1}>‹</button>
+                {pageButtons.map((p, i) => {
+                  const prev = pageButtons[i - 1];
+                  return (
+                    <React.Fragment key={p}>
+                      {prev && p - prev > 1 && <span style={{ color: "var(--text-muted)", fontSize: 12 }}>…</span>}
+                      <button
+                        className={`page-btn ${p === currentPage ? "active" : ""}`}
+                        onClick={() => setPage(p)}
+                      >{p}</button>
+                    </React.Fragment>
+                  );
+                })}
+                <button className="page-btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}>›</button>
+              </div>
+            )}
+
+          </div>
+        </>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
