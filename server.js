@@ -163,22 +163,46 @@ async function fetchAccountCommission(account, start, end) {
             }
         }
 
+        // Flatten: mỗi checkout (o) có thể chứa nhiều orders[], mỗi order có items[]
+        const flatOrders = [];
+        for (const o of orders) {
+            const commission = Number(o.linked_mcn_commission_rate) === 100000
+                ? Math.round(o.estimated_total_commission_with_mcn / 100000)
+                : Math.round(o.estimated_total_commission / 100000);
+
+            if (o.orders && o.orders.length > 0) {
+                for (const ord of o.orders) {
+                    const firstItem = ord.items?.[0];
+                    flatOrders.push({
+                        orderId:      ord.order_sn,
+                        status:       o.conversion_status,
+                        commission,
+                        itemValue:    Math.round((ord.items?.reduce((a, i) => a + (i.actual_amount || 0), 0) || 0) / 100000),
+                        purchaseTime: o.purchase_time,
+                        productName:  firstItem?.item_name || "",
+                        mcnRate:      o.linked_mcn_commission_rate,
+                    });
+                }
+            } else {
+                // fallback nếu không có orders[]
+                flatOrders.push({
+                    orderId:      o.checkout_id || "",
+                    status:       o.conversion_status,
+                    commission,
+                    itemValue:    0,
+                    purchaseTime: o.purchase_time,
+                    productName:  "",
+                    mcnRate:      o.linked_mcn_commission_rate,
+                });
+            }
+        }
+
         return {
             key: account.key,
             error: null,
             commission: calcCommission(orders),
             totalOrders: totalCount,
-            orders: orders.map(o => ({
-                orderId:        o.order_sn,
-                status:         o.conversion_status,
-                commission:     Number(o.linked_mcn_commission_rate) === 100000
-                                    ? Math.round(o.estimated_total_commission_with_mcn / 100000)
-                                    : Math.round(o.estimated_total_commission / 100000),
-                itemValue:      Math.round((o.item_price_after_discount || 0) / 100000),
-                purchaseTime:   o.purchase_time,
-                productName:    o.product_name || "",
-                mcnRate:        o.linked_mcn_commission_rate,
-            })),
+            orders: flatOrders,
         };
     } catch (err) {
         return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", commission: 0, orders: [] };
