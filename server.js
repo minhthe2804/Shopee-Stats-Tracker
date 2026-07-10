@@ -52,6 +52,10 @@ function getSpcStCookie(account) {
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
+// nhỏ delay giữa các request để tránh burst traffic bị coi là bot
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 300);
+
 // ── Creator Sessions API ─────────────────────────────────────────────────────
 async function fetchCreatorSessions(spcSt, page = 1, pageSize = 50) {
     const { data } = await axios.get(
@@ -85,11 +89,14 @@ async function fetchAccount(account) {
         let sessions = first.data.list || [];
         const totalPage = first.data.totalPage || 1;
 
-        if (totalPage > 1) {
-            const pages = Array.from({ length: totalPage - 1 }, (_, i) => i + 2);
-            const rest  = await Promise.all(pages.map(p => fetchCreatorSessions(spcSt, p, 50).catch(() => null)));
-            for (const r of rest) {
+        // Lấy các trang còn lại tuần tự (không bắn song song) để giảm nguy cơ bị chặn
+        for (let page = 2; page <= totalPage; page++) {
+            await sleep(REQUEST_DELAY_MS);
+            try {
+                const r = await fetchCreatorSessions(spcSt, page, 50);
                 if (r?.code === 0 && r.data?.list) sessions = [...sessions, ...r.data.list];
+            } catch {
+                // bỏ qua trang lỗi, giữ những gì đã lấy được
             }
         }
 
@@ -155,11 +162,14 @@ async function fetchAccountCommission(account, start, end) {
         const totalPages = Math.max(1, Math.ceil(totalCount / 500));
         let orders = first.data.list || [];
 
-        if (totalPages > 1) {
-            const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
-            const rest  = await Promise.all(pages.map(p => fetchCommissionPage(spcSt, p, start, end).catch(() => null)));
-            for (const r of rest) {
+        // Lấy các trang còn lại tuần tự thay vì song song
+        for (let page = 2; page <= totalPages; page++) {
+            await sleep(REQUEST_DELAY_MS);
+            try {
+                const r = await fetchCommissionPage(spcSt, page, start, end);
                 if (r?.data?.list) orders = [...orders, ...r.data.list];
+            } catch {
+                // bỏ qua trang lỗi, giữ những gì đã lấy được
             }
         }
 
@@ -221,8 +231,15 @@ app.get("/api/stats", async (req, res) => {
         }
         const accounts = await getAccountsFromFirestore();
         const t0 = Date.now();
-        const settled = await Promise.all(accounts.map(fetchAccount));
-        const results = settled.filter(Boolean);
+
+        // Gọi tuần tự từng tài khoản (không song song) để tránh bị Shopee chặn do burst traffic
+        const results = [];
+        for (const account of accounts) {
+            const r = await fetchAccount(account);
+            if (r) results.push(r);
+            await sleep(REQUEST_DELAY_MS);
+        }
+
         console.log(`✅ Stats: ${results.length} accounts in ${Date.now() - t0}ms`);
         statsCache.data = results; statsCache.at = Date.now();
         res.json({ success: true, data: results, fetchedAt: statsCache.at, cached: false });
@@ -248,8 +265,15 @@ app.get("/api/commission", async (req, res) => {
         const { start, end } = dayRange(dateStr);
         const accounts = await getAccountsFromFirestore();
         const t0 = Date.now();
-        const settled = await Promise.all(accounts.map(a => fetchAccountCommission(a, start, end)));
-        const results = settled.filter(Boolean);
+
+        // Gọi tuần tự từng tài khoản (không song song) để tránh bị Shopee chặn do burst traffic
+        const results = [];
+        for (const account of accounts) {
+            const r = await fetchAccountCommission(account, start, end);
+            if (r) results.push(r);
+            await sleep(REQUEST_DELAY_MS);
+        }
+
         console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 
         commCache[cacheKey] = { data: results, at: Date.now() };
