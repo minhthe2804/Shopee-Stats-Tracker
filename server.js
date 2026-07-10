@@ -1,5 +1,6 @@
 import express from "express";
 import axios from "axios";
+import https from "https";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, getDocsFromServer, query } from "firebase/firestore";
 import { fileURLToPath } from "url";
@@ -52,9 +53,66 @@ function getSpcStCookie(account) {
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
-// nhỏ delay giữa các request để tránh burst traffic bị coi là bot
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS || 300);
+
+// ── Cấu hình concurrency / jitter / backoff ─────────────────────────────────
+const CONCURRENCY   = Number(process.env.SHOPEE_CONCURRENCY || 20);   // số request đồng thời tối đa
+const JITTER_MIN_MS = Number(process.env.JITTER_MIN_MS || 150);
+const JITTER_MAX_MS = Number(process.env.JITTER_MAX_MS || 450);
+const jitter = () => JITTER_MIN_MS + Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS);
+
+// Tái sử dụng kết nối TCP/TLS thay vì mở mới liên tục
+const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: CONCURRENCY, maxFreeSockets: CONCURRENCY });
+axios.defaults.httpsAgent = keepAliveAgent;
+
+// Backoff thích ứng: theo dõi tỉ lệ lỗi gần đây, tự chậm lại nếu nghi ngờ bị chặn
+class AdaptiveBackoff {
+    constructor() { this.recentErrors = 0; this.recentTotal = 0; this.extraDelay = 0; }
+    record(isError) {
+        this.recentTotal++;
+        if (isError) this.recentErrors++;
+        // Cứ mỗi 30 request thì đánh giá lại 1 lần
+        if (this.recentTotal >= 30) {
+            const errorRate = this.recentErrors / this.recentTotal;
+            if (errorRate > 0.3) {
+                this.extraDelay = Math.min(this.extraDelay + 500, 5000); // tăng dần, tối đa +5s
+                console.warn(`⚠️  Tỉ lệ lỗi cao (${(errorRate * 100).toFixed(0)}%) — tăng delay thêm ${this.extraDelay}ms`);
+            } else if (errorRate < 0.05 && this.extraDelay > 0) {
+                this.extraDelay = Math.max(this.extraDelay - 250, 0); // giảm dần khi ổn định lại
+            }
+            this.recentErrors = 0; this.recentTotal = 0;
+        }
+    }
+    getDelay() { return jitter() + this.extraDelay; }
+}
+const statsBackoff = new AdaptiveBackoff();
+const commBackoff   = new AdaptiveBackoff();
+
+// Chạy danh sách task với concurrency giới hạn (thay cho Promise.all không giới hạn
+// hoặc for-loop tuần tự quá chậm). backoff (tuỳ chọn) sẽ tự điều chỉnh delay giữa các lần dispatch.
+async function runPool(items, worker, concurrency, backoff) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    async function runWorker() {
+        while (true) {
+            const i = nextIndex++;
+            if (i >= items.length) return;
+            if (backoff) await sleep(backoff.getDelay());
+            try {
+                results[i] = await worker(items[i]);
+                if (backoff) backoff.record(false);
+            } catch (err) {
+                results[i] = null;
+                if (backoff) backoff.record(true);
+            }
+        }
+    }
+
+    const workers = Array.from({ length: Math.min(concurrency, items.length) }, runWorker);
+    await Promise.all(workers);
+    return results;
+}
 
 // ── Creator Sessions API ─────────────────────────────────────────────────────
 async function fetchCreatorSessions(spcSt, page = 1, pageSize = 50) {
@@ -89,14 +147,11 @@ async function fetchAccount(account) {
         let sessions = first.data.list || [];
         const totalPage = first.data.totalPage || 1;
 
-        // Lấy các trang còn lại tuần tự (không bắn song song) để giảm nguy cơ bị chặn
-        for (let page = 2; page <= totalPage; page++) {
-            await sleep(REQUEST_DELAY_MS);
-            try {
-                const r = await fetchCreatorSessions(spcSt, page, 50);
+        if (totalPage > 1) {
+            const pages = Array.from({ length: totalPage - 1 }, (_, i) => i + 2);
+            const rest = await runPool(pages, (p) => fetchCreatorSessions(spcSt, p, 50), Math.min(4, pages.length), null);
+            for (const r of rest) {
                 if (r?.code === 0 && r.data?.list) sessions = [...sessions, ...r.data.list];
-            } catch {
-                // bỏ qua trang lỗi, giữ những gì đã lấy được
             }
         }
 
@@ -162,14 +217,11 @@ async function fetchAccountCommission(account, start, end) {
         const totalPages = Math.max(1, Math.ceil(totalCount / 500));
         let orders = first.data.list || [];
 
-        // Lấy các trang còn lại tuần tự thay vì song song
-        for (let page = 2; page <= totalPages; page++) {
-            await sleep(REQUEST_DELAY_MS);
-            try {
-                const r = await fetchCommissionPage(spcSt, page, start, end);
+        if (totalPages > 1) {
+            const pages = Array.from({ length: totalPages - 1 }, (_, i) => i + 2);
+            const rest = await runPool(pages, (p) => fetchCommissionPage(spcSt, p, start, end), Math.min(4, pages.length), null);
+            for (const r of rest) {
                 if (r?.data?.list) orders = [...orders, ...r.data.list];
-            } catch {
-                // bỏ qua trang lỗi, giữ những gì đã lấy được
             }
         }
 
@@ -232,13 +284,10 @@ app.get("/api/stats", async (req, res) => {
         const accounts = await getAccountsFromFirestore();
         const t0 = Date.now();
 
-        // Gọi tuần tự từng tài khoản (không song song) để tránh bị Shopee chặn do burst traffic
-        const results = [];
-        for (const account of accounts) {
-            const r = await fetchAccount(account);
-            if (r) results.push(r);
-            await sleep(REQUEST_DELAY_MS);
-        }
+        // Concurrency giới hạn (không phải tuần tự, không phải song song vô hạn)
+        // + jitter ngẫu nhiên + backoff thích ứng nếu tỉ lệ lỗi tăng đột biến
+        const settled = await runPool(accounts, fetchAccount, CONCURRENCY, statsBackoff);
+        const results = settled.filter(Boolean);
 
         console.log(`✅ Stats: ${results.length} accounts in ${Date.now() - t0}ms`);
         statsCache.data = results; statsCache.at = Date.now();
@@ -266,13 +315,8 @@ app.get("/api/commission", async (req, res) => {
         const accounts = await getAccountsFromFirestore();
         const t0 = Date.now();
 
-        // Gọi tuần tự từng tài khoản (không song song) để tránh bị Shopee chặn do burst traffic
-        const results = [];
-        for (const account of accounts) {
-            const r = await fetchAccountCommission(account, start, end);
-            if (r) results.push(r);
-            await sleep(REQUEST_DELAY_MS);
-        }
+        const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
+        const results = settled.filter(Boolean);
 
         console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 
