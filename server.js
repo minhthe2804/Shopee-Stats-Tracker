@@ -5,10 +5,23 @@ import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, getDocsFromServer, query } from "firebase/firestore";
 import { fileURLToPath } from "url";
 import path from "path";
+import fs from "fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ── Người phụ trách (owner) theo từng tài khoản ──────────────────────────────
+// owners.json: { "accountKey": "TÊN NGƯỜI PHỤ TRÁCH", ... } — đặt cùng thư mục với server.js.
+// Nếu không có file này, mọi tài khoản sẽ có owner: null (không lỗi).
+let OWNERS = {};
+try {
+    OWNERS = JSON.parse(fs.readFileSync(path.join(__dirname, "owners.json"), "utf-8"));
+    console.log(`✅ Đã tải ${Object.keys(OWNERS).length} mapping người phụ trách`);
+} catch {
+    console.warn("⚠️  Không tìm thấy owners.json — bỏ qua, mọi tài khoản sẽ không có người phụ trách");
+}
+const getOwner = (key) => OWNERS[key] || null;
 
 // ── Firebase config ──────────────────────────────────────────────────────────
 let firebaseConfig;
@@ -287,7 +300,7 @@ app.get("/api/stats", async (req, res) => {
         // Concurrency giới hạn (không phải tuần tự, không phải song song vô hạn)
         // + jitter ngẫu nhiên + backoff thích ứng nếu tỉ lệ lỗi tăng đột biến
         const settled = await runPool(accounts, fetchAccount, CONCURRENCY, statsBackoff);
-        const results = settled.filter(Boolean);
+        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
 
         console.log(`✅ Stats: ${results.length} accounts in ${Date.now() - t0}ms`);
         statsCache.data = results; statsCache.at = Date.now();
@@ -316,7 +329,7 @@ app.get("/api/commission", async (req, res) => {
         const t0 = Date.now();
 
         const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
-        const results = settled.filter(Boolean);
+        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
 
         console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 

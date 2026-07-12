@@ -303,7 +303,7 @@
 
   /* ── ACCOUNT CARD (live) ── */
   function AccountCard({ account, active, onClick }) {
-    const { key, error, sessions=[] } = account;
+    const { key, error, sessions=[], owner } = account;
     const liveCount = sessions.filter(s => s.status === 1).length;
     return <div className={`account-card ${active?"active":""} ${error?"error-card":""}`} onClick={onClick} title={active?"Bỏ lọc":"Lọc theo tài khoản này"}>
       <div className="card-header">
@@ -311,6 +311,7 @@
         <div className="card-name">{key}</div>
         {liveCount > 0 && <span className="live-badge">{liveCount} LIVE</span>}
       </div>
+      {owner && <div style={{fontSize:11,color:"var(--text-muted)",marginTop:-8,marginBottom:10}}>👤 {owner}</div>}
       {error ? <div className="card-error">⚠ {error}</div> : (
         <div className="card-stats">
           <div><div className="card-stat-label">Phiên live</div><div className="card-stat-value">{sessions.length}</div></div>
@@ -324,12 +325,13 @@
 
   /* ── ACCOUNT CARD (commission) ── */
   function CommAccountCard({ account, active, onClick }) {
-    const { key, error, commission=0, totalOrders=0 } = account;
+    const { key, error, commission=0, totalOrders=0, owner } = account;
     return <div className={`account-card ${active?"active":""} ${error?"error-card":""}`} onClick={onClick} title={active?"Bỏ lọc":"Lọc theo tài khoản này"}>
       <div className="card-header">
         <div className={`card-dot ${error?"err":""}`} />
         <div className="card-name">{key}</div>
       </div>
+      {owner && <div style={{fontSize:11,color:"var(--text-muted)",marginTop:-8,marginBottom:10}}>👤 {owner}</div>}
       {error ? <div className="card-error">⚠ {error}</div> : (
         <div className="card-stats">
           <div><div className="card-stat-label">Đơn hàng</div><div className="card-stat-value">{fmtNum(totalOrders)}</div></div>
@@ -383,6 +385,7 @@
   ══════════════════════════════════════ */
   function LiveTab({ data }) {
     const [activeAccount, setActiveAccount] = useState("all");
+    const [ownerFilter,   setOwnerFilter]   = useState("all");
     const [searchQ,       setSearchQ]       = useState("");
     const [statusFilter,  setStatusFilter]  = useState("all");
     const [dateFrom,      setDateFrom]      = useState("");
@@ -392,15 +395,16 @@
     const [page,          setPage]          = useState(1);
     const [showAccounts,  setShowAccounts]  = useState(true);
 
+    const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
-    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setPage(1); };
-    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo;
+    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setPage(1); };
+    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all";
 
     const allSessions = useMemo(() => {
       const rows = [];
       for (const acc of data) {
         if (acc.error || !acc.sessions?.length) continue;
-        for (const s of acc.sessions) rows.push({...s, _accountKey: acc.key});
+        for (const s of acc.sessions) rows.push({...s, _accountKey: acc.key, _owner: acc.owner});
       }
       return rows;
     }, [data]);
@@ -408,15 +412,16 @@
     const filtered = useMemo(() => {
       let rows = allSessions;
       if (activeAccount !== "all") rows = rows.filter(s => s._accountKey === activeAccount);
+      if (ownerFilter !== "all") rows = rows.filter(s => s._owner === ownerFilter);
       if (statusFilter === "live") rows = rows.filter(s => s.status === 1);
       if (statusFilter === "done") rows = rows.filter(s => s.status !== 1);
       if (searchQ.trim()) { const q = searchQ.trim().toLowerCase(); rows = rows.filter(s => (s.title||"").toLowerCase().includes(q) || s._accountKey.toLowerCase().includes(q)); }
       if (dateFrom) { const from = new Date(dateFrom).setHours(0,0,0,0); rows = rows.filter(s => (s.startTime < 1e12 ? s.startTime*1000 : s.startTime) >= from); }
       if (dateTo)   { const to   = new Date(dateTo).setHours(23,59,59,999); rows = rows.filter(s => (s.startTime < 1e12 ? s.startTime*1000 : s.startTime) <= to); }
       return [...rows].sort((a,b) => { const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
-    }, [allSessions, activeAccount, statusFilter, searchQ, dateFrom, dateTo, sortField, sortDir]);
+    }, [allSessions, activeAccount, ownerFilter, statusFilter, searchQ, dateFrom, dateTo, sortField, sortDir]);
 
-    useEffect(() => setPage(1), [activeAccount, statusFilter, searchQ, dateFrom, dateTo]);
+    useEffect(() => setPage(1), [activeAccount, ownerFilter, statusFilter, searchQ, dateFrom, dateTo]);
 
     const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
     const currentPage = Math.min(page, totalPages);
@@ -469,6 +474,14 @@
         <div className="search-wrap">
           <span className="search-icon"><IcoSearch/></span>
           <input className="search-input" placeholder="Tìm tiêu đề, tài khoản…" value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Người phụ trách:</span>
+          <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            {owners.map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
         </div>
         <div className="toolbar-divider"/>
         <div className="filter-group">
@@ -543,6 +556,7 @@
     const [fetchedAt,     setFetchedAt]    = useState(null);
     const [cached,        setCached]       = useState(false);
     const [activeAccount, setActiveAccount]= useState("all");
+    const [ownerFilter,   setOwnerFilter]  = useState("all");
     const [searchQ,       setSearchQ]      = useState("");
     const [statusFilter,  setStatusFilter] = useState("all");
     const [sortField,     setSortField]    = useState("purchaseTime");
@@ -571,12 +585,14 @@
 
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
 
+    const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
+
     // Flatten all orders
     const allOrders = useMemo(() => {
       const rows = [];
       for (const acc of data) {
         if (acc.error || !acc.orders?.length) continue;
-        for (const o of acc.orders) rows.push({...o, _accountKey: acc.key});
+        for (const o of acc.orders) rows.push({...o, _accountKey: acc.key, _owner: acc.owner});
       }
       return rows;
     }, [data]);
@@ -584,13 +600,14 @@
     const filtered = useMemo(() => {
       let rows = allOrders;
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
+      if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
       if (statusFilter === "cancelled") rows = rows.filter(o => o.status === 4);
       if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== 4);
       if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
       return [...rows].sort((a,b)=>{ const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
-    }, [allOrders, activeAccount, statusFilter, searchQ, sortField, sortDir]);
+    }, [allOrders, activeAccount, ownerFilter, statusFilter, searchQ, sortField, sortDir]);
 
-    useEffect(() => setPage(1), [activeAccount, statusFilter, searchQ]);
+    useEffect(() => setPage(1), [activeAccount, ownerFilter, statusFilter, searchQ]);
 
     const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
     const currentPage = Math.min(page, totalPages);
@@ -673,6 +690,14 @@
           </div>
           <div className="toolbar-divider"/>
           <div className="filter-group">
+            <span className="filter-group-label">Người phụ trách:</span>
+            <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
+              <option value="all">Tất cả</option>
+              {owners.map(o=><option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div className="toolbar-divider"/>
+          <div className="filter-group">
             <span className="filter-group-label">Trạng thái:</span>
             {[["all","Tất cả"],["confirmed","Hợp lệ"],["cancelled","Đã huỷ"]].map(([v,l])=><button key={v} className={`pill ${statusFilter===v?"active":""}`} onClick={()=>setStatusFilter(v)}>{l}</button>)}
           </div>
@@ -687,7 +712,7 @@
             </select>
             <button className="sort-dir-btn" onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
           </div>
-          {(searchQ||statusFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
+          {(searchQ||statusFilter!=="all"||ownerFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");setOwnerFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
         </div>
 
         <div className="result-row">
