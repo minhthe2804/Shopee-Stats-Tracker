@@ -1,11 +1,13 @@
 import express from "express";
 import axios from "axios";
 import https from "https";
+import cron from "node-cron";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, getDocsFromServer, query } from "firebase/firestore";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
+import { syncCommissionToSheet, syncCommissionToPhuTrachSheet } from "./sheetSync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -312,6 +314,26 @@ app.get("/api/stats", async (req, res) => {
 });
 
 // Hoa hồng affiliate — ?date=YYYY-MM-DD (mặc định hôm nay theo GMT+7)
+// Lấy hoa hồng cho 1 ngày (dùng chung cho route /api/commission và cron đồng bộ Sheet)
+async function getCommissionForDate(dateStr, force = false) {
+    const cacheKey = dateStr;
+    if (!force && commCache[cacheKey] && Date.now() - commCache[cacheKey].at < COMM_CACHE_TTL) {
+        return { data: commCache[cacheKey].data, fetchedAt: commCache[cacheKey].at, cached: true };
+    }
+
+    const { start, end } = dayRange(dateStr);
+    const accounts = await getAccountsFromFirestore();
+    const t0 = Date.now();
+
+    const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
+    const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
+
+    console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
+
+    commCache[cacheKey] = { data: results, at: Date.now() };
+    return { data: results, fetchedAt: commCache[cacheKey].at, cached: false };
+}
+
 app.get("/api/commission", async (req, res) => {
     try {
         // Ngày mặc định: hôm nay theo GMT+7
@@ -319,24 +341,62 @@ app.get("/api/commission", async (req, res) => {
         const dateStr  = req.query.date || todayVN;
         const force    = req.query.refresh === "1";
 
-        const cacheKey = dateStr;
-        if (!force && commCache[cacheKey] && Date.now() - commCache[cacheKey].at < COMM_CACHE_TTL) {
-            return res.json({ success: true, data: commCache[cacheKey].data, fetchedAt: commCache[cacheKey].at, cached: true, date: dateStr });
-        }
-
-        const { start, end } = dayRange(dateStr);
-        const accounts = await getAccountsFromFirestore();
-        const t0 = Date.now();
-
-        const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
-        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
-
-        console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
-
-        commCache[cacheKey] = { data: results, at: Date.now() };
-        res.json({ success: true, data: results, fetchedAt: commCache[cacheKey].at, cached: false, date: dateStr });
+        const { data, fetchedAt, cached } = await getCommissionForDate(dateStr, force);
+        res.json({ success: true, data, fetchedAt, cached, date: dateStr });
     } catch (err) {
         console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── Đồng bộ hoa hồng lên Google Sheet ────────────────────────────────────────
+// Ngày hôm qua theo GMT+7, dạng ISO (yyyy-mm-dd, dùng để gọi API) và dạng hiển
+// thị (dd/mm/yyyy, dùng làm tiêu đề cột trên Sheet).
+function yesterdayVN() {
+    const nowVN = new Date(Date.now() + 7 * 3600_000);
+    nowVN.setUTCDate(nowVN.getUTCDate() - 1);
+    const iso = nowVN.toISOString().slice(0, 10);           // yyyy-mm-dd
+    const [y, m, d] = iso.split("-");
+    return { iso, display: `${d}/${m}/${y}` };
+}
+
+async function runDailySheetSync(dateOverride = null) {
+    const { iso, display } = dateOverride
+        ? { iso: dateOverride, display: dateOverride.split("-").reverse().join("/") }
+        : yesterdayVN();
+    const dayNumber = String(Number(iso.split("-")[2])); // "13" (bỏ số 0 đứng đầu nếu có)
+
+    console.log(`🔄 Đồng bộ Sheet: lấy hoa hồng ngày ${iso} (hiển thị ${display})...`);
+    const { data } = await getCommissionForDate(iso, true); // force=true: luôn lấy số mới nhất, không dùng cache cũ
+
+    const rows = data.map(acc => ({
+        key: acc.key,
+        value: acc.error ? acc.error : (acc.commission ?? 0),
+    }));
+
+    const hhResult = await syncCommissionToSheet(display, rows);
+    console.log(`✅ [HH] Đã ghi đè snapshot ngày ${display}: ${hhResult.rows} tài khoản`);
+
+    const ptResult = await syncCommissionToPhuTrachSheet(dayNumber);
+    console.log(`✅ [PHỤ TRÁCH] Đã chèn cột ${ptResult.column}, tính + đóng băng ${ptResult.rows} dòng`);
+
+    return { date: display, hh: hhResult, phuTrach: ptResult };
+}
+
+// Chạy lúc 9h sáng mỗi ngày theo giờ Việt Nam (GMT+7), lấy hoa hồng NGÀY HÔM QUA
+cron.schedule("0 9 * * *", () => {
+    runDailySheetSync().catch(err => console.error("❌ Lỗi đồng bộ Sheet (cron):", err.message));
+}, { timezone: "Asia/Ho_Chi_Minh" });
+
+// Kích hoạt thủ công để test ngay, không cần chờ 9h sáng.
+// Gọi: POST /api/sync-sheet  (mặc định lấy hôm qua)
+//      POST /api/sync-sheet?date=2026-07-13  (chỉ định ngày cụ thể, dạng yyyy-mm-dd)
+app.post("/api/sync-sheet", async (req, res) => {
+    try {
+        const result = await runDailySheetSync(req.query.date || null);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error("❌ Lỗi đồng bộ Sheet (thủ công):", err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
