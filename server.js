@@ -384,9 +384,9 @@ async function runDailySheetSync(dateOverride = null) {
 }
 
 // Chạy lúc 9h sáng mỗi ngày theo giờ Việt Nam (GMT+7), lấy hoa hồng NGÀY HÔM QUA
-cron.schedule("0 9 * * *", () => {
-    runDailySheetSync().catch(err => console.error("❌ Lỗi đồng bộ Sheet (cron):", err.message));
-}, { timezone: "Asia/Ho_Chi_Minh" });
+// cron.schedule("0 9 * * *", () => {
+//     runDailySheetSync().catch(err => console.error("❌ Lỗi đồng bộ Sheet (cron):", err.message));
+// }, { timezone: "Asia/Ho_Chi_Minh" });
 
 // Kích hoạt thủ công để test ngay, không cần chờ 9h sáng.
 // Gọi: POST /api/sync-sheet  (mặc định lấy hôm qua)
