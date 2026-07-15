@@ -47,6 +47,15 @@ export function formatDayLabel(dateInput) {
     return `${day}.${month}`;
 }
 
+// ── Helper: rút "ngày.tháng" từ tiêu đề cột (hỗ trợ "13.07", "9/7", "13") ────
+function extractDayMonth(header) {
+    const s = String(header || "").trim();
+    let m = s.match(/^(\d{1,2})[.\/](\d{1,2})$/);
+    if (m) return { day: Number(m[1]), month: Number(m[2]) };
+    m = s.match(/^(\d{1,2})$/);
+    if (m) return { day: Number(m[1]), month: null };
+    return null;
+}
 
 // ── Helper: nhận diện các thông báo lỗi (cookie hết hạn / không tìm thấy...) ─
 // Những giá trị này không phải số hoa hồng thật — cần được XOÁ (để trống) khỏi
