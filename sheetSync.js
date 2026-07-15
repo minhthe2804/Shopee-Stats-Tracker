@@ -140,20 +140,36 @@ export async function syncCommissionToPhuTrachSheet(
     if (anchorColIdx0 === -1)  throw new Error(`Không tìm thấy cột "${anchorHeader}" trong tab "${tabName}"`);
     const accountColLetter = colLetter(accountColIdx0 + 1);
 
-    // 2. Chèn cột trống ngay tại vị trí cột mốc (đẩy HH HÔM QUA / Tổng sang phải)
-    const sheetId = await getSheetIdByName(sheets, tabName);
-    await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SPREADSHEET_ID,
-        requestBody: {
-            requests: [{
-                insertDimension: {
-                    range: { sheetId, dimension: "COLUMNS", startIndex: anchorColIdx0, endIndex: anchorColIdx0 + 1 },
-                    inheritFromBefore: true,
-                },
-            }],
-        },
-    });
-    const newCol = colLetter(anchorColIdx0 + 1); // cột mới nằm đúng vị trí cũ của cột mốc
+    // Kiểm tra ngày này đã có cột sẵn chưa (tránh chèn trùng khi chạy lại)
+    const target = extractDayMonth(dayLabel);
+    let existingColIdx0 = -1;
+    for (let i = 0; i < row1Values.length; i++) {
+        if (i === accountColIdx0 || i === anchorColIdx0) continue;
+        const parsed = extractDayMonth(row1Values[i]);
+        if (!parsed) continue;
+        const sameDay = parsed.day === target.day;
+        const sameMonth = parsed.month == null || target.month == null || parsed.month === target.month;
+        if (sameDay && sameMonth) { existingColIdx0 = i; break; }
+    }
+
+    let newCol;
+    if (existingColIdx0 !== -1) {
+        newCol = colLetter(existingColIdx0 + 1); // dùng lại cột cũ, không chèn thêm
+    } else {
+        const sheetId = await getSheetIdByName(sheets, tabName);
+        await sheets.spreadsheets.batchUpdate({
+            spreadsheetId: SPREADSHEET_ID,
+            requestBody: {
+                requests: [{
+                    insertDimension: {
+                        range: { sheetId, dimension: "COLUMNS", startIndex: anchorColIdx0, endIndex: anchorColIdx0 + 1 },
+                        inheritFromBefore: true,
+                    },
+                }],
+            },
+        });
+        newCol = colLetter(anchorColIdx0 + 1);
+    }
 
     // 3. Lấy danh sách tài khoản hiện có (cột ACCOUNT, từ dòng 2 trở đi)
     const accountColRes = await sheets.spreadsheets.values.get({

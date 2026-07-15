@@ -364,7 +364,7 @@ async function runDailySheetSync(dateOverride = null) {
     const { iso, display } = dateOverride
         ? { iso: dateOverride, display: dateOverride.split("-").reverse().join("/") }
         : yesterdayVN();
-    const dayNumber = String(Number(iso.split("-")[2])); // "13" (bỏ số 0 đứng đầu nếu có)
+   const dayLabel = formatDayLabel(iso); // "dd.mm", vd "13.07" — khớp định dạng cột có sẵn trong tab PHỤ TRÁCH
 
     console.log(`🔄 Đồng bộ Sheet: lấy hoa hồng ngày ${iso} (hiển thị ${display})...`);
     const { data } = await getCommissionForDate(iso, true); // force=true: luôn lấy số mới nhất, không dùng cache cũ
@@ -384,9 +384,9 @@ async function runDailySheetSync(dateOverride = null) {
 }
 
 // Chạy lúc 9h sáng mỗi ngày theo giờ Việt Nam (GMT+7), lấy hoa hồng NGÀY HÔM QUA
-// cron.schedule("0 9 * * *", () => {
-//     runDailySheetSync().catch(err => console.error("❌ Lỗi đồng bộ Sheet (cron):", err.message));
-// }, { timezone: "Asia/Ho_Chi_Minh" });
+cron.schedule("0 9 * * *", () => {
+    runDailySheetSync().catch(err => console.error("❌ Lỗi đồng bộ Sheet (cron):", err.message));
+}, { timezone: "Asia/Ho_Chi_Minh" });
 
 // Kích hoạt thủ công để test ngay, không cần chờ 9h sáng.
 // Gọi: POST /api/sync-sheet  (mặc định lấy hôm qua)
