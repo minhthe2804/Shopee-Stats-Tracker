@@ -7,7 +7,7 @@ import { getFirestore, collection, getDocs, getDocsFromServer, query } from "fir
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
-import { syncCommissionToSheet, syncCommissionToPhuTrachSheet } from "./sheetSync.js";
+import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel } from "./sheetSync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -364,23 +364,23 @@ async function runDailySheetSync(dateOverride = null) {
     const { iso, display } = dateOverride
         ? { iso: dateOverride, display: dateOverride.split("-").reverse().join("/") }
         : yesterdayVN();
-   const dayLabel = formatDayLabel(iso); // "dd.mm", vd "13.07" — khớp định dạng cột có sẵn trong tab PHỤ TRÁCH
-
-    console.log(`🔄 Đồng bộ Sheet: lấy hoa hồng ngày ${iso} (hiển thị ${display})...`);
-    const { data } = await getCommissionForDate(iso, true); // force=true: luôn lấy số mới nhất, không dùng cache cũ
-
+    const dayLabel = formatDayLabel(iso); // "dd.mm", vd "13.07" — khớp định dạng cột có sẵn trong tab PHỤ TRÁCH
+ 
+    console.log(`🔄 Đồng bộ Sheet: lấy hoa hồng ngày ${iso} (hiển thị ${display}, nhãn cột ${dayLabel})...`);
+    const { data } = await getCommissionForDate(iso, true);
+ 
     const rows = data.map(acc => ({
         key: acc.key,
         value: acc.error ? acc.error : (acc.commission ?? 0),
     }));
-
+ 
     const hhResult = await syncCommissionToSheet(display, rows);
     console.log(`✅ [HH] Đã ghi đè snapshot ngày ${display}: ${hhResult.rows} tài khoản`);
-
-    const ptResult = await syncCommissionToPhuTrachSheet(dayNumber);
-    console.log(`✅ [PHỤ TRÁCH] Đã chèn cột ${ptResult.column}, tính + đóng băng ${ptResult.rows} dòng`);
-
-    return { date: display, hh: hhResult, phuTrach: ptResult };
+ 
+    const ptResult = await syncCommissionToPhuTrachSheet(dayLabel);
+    console.log(`✅ [PHỤ TRÁCH] Đã dùng cột ${ptResult.column}, tính + đóng băng ${ptResult.rows} dòng (${ptResult.cleared} ô lỗi đã xoá trống)`);
+ 
+    return { date: display, dayLabel, hh: hhResult, phuTrach: ptResult };
 }
 
 // Chạy lúc 9h sáng mỗi ngày theo giờ Việt Nam (GMT+7), lấy hoa hồng NGÀY HÔM QUA

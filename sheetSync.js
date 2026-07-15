@@ -39,6 +39,14 @@ function colLetter(n) {
     return s;
 }
 
+// ── Helper: định dạng ngày dạng "dd.mm" ──────────────────────────────────────
+export function formatDayLabel(dateInput) {
+    const d = typeof dateInput === "string" ? new Date(dateInput + "T00:00:00") : dateInput;
+    const day   = String(d.getDate()).padStart(2, "0");
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    return `${day}.${month}`;
+}
+
 // ── Helper: định dạng ngày dạng "dd.mm" (VD: ngày 14/07 → "14.07") ───────────
 // dateInput: Date object, hoặc chuỗi "YYYY-MM-DD"
 export function formatDayLabel(dateInput) {
