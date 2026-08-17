@@ -50,6 +50,9 @@ const commCache      = {};          // key: "YYYY-MM-DD" → { data, at }
 const CACHE_TTL      = 30_000;
 const COMM_CACHE_TTL = 60_000;     // hoa hồng cache 60s
 
+const sessionProductsCache      = {}; // key: "accountKey::sessionId" → { data, total, at }
+const SESSION_PRODUCTS_CACHE_TTL = 30_000;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 async function getAccountsFromFirestore() {
     const snapshot = await getDocsFromServer(query(collection(db, "cookies")));
@@ -174,6 +177,25 @@ async function fetchAccount(account) {
     } catch (err) {
         return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", sessions: [] };
     }
+}
+
+// Chi tiết sản phẩm đang bán trong 1 phiên live (dashboard realtime)
+async function fetchSessionProducts(spcSt, sessionId, page = 1, pageSize = 100) {
+    const { data } = await axios.get(
+        `https://creator.shopee.vn/supply/api/lm/sellercenter/realtime/dashboard/productList` +
+        `?sessionId=${sessionId}&productName=&productListTimeRange=0&sort=desc&page=${page}&pageSize=${pageSize}`,
+        {
+            headers: {
+                cookie: `SPC_ST=${spcSt}`,
+                referer: "https://creator.shopee.vn/",
+                "user-agent": UA,
+                accept: "application/json, text/plain, */*",
+                "accept-language": "vi-VN,vi;q=0.9,en;q=0.8",
+            },
+            timeout: 10000,
+        }
+    );
+    return data;
 }
 
 // ── Affiliate Commission API ─────────────────────────────────────────────────
@@ -310,6 +332,51 @@ app.get("/api/stats", async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Chi tiết sản phẩm đang bán trong 1 phiên live — ?account=<key>&sessionId=<id>
+app.get("/api/session-products", async (req, res) => {
+    try {
+        const { account, sessionId } = req.query;
+        if (!account || !sessionId) {
+            return res.status(400).json({ success: false, error: "Thiếu tham số account hoặc sessionId" });
+        }
+
+        const cacheKey = `${account}::${sessionId}`;
+        const cached = sessionProductsCache[cacheKey];
+        if (cached && Date.now() - cached.at < SESSION_PRODUCTS_CACHE_TTL) {
+            return res.json({ success: true, data: cached.data, total: cached.total, cached: true });
+        }
+
+        const accounts = await getAccountsFromFirestore();
+        const acc = accounts.find((a) => a.key === account);
+        if (!acc) return res.status(404).json({ success: false, error: "Không tìm thấy tài khoản" });
+
+        const spcSt = getSpcStCookie(acc);
+        if (!spcSt) return res.status(400).json({ success: false, error: "Không tìm thấy cookie SPC_ST" });
+
+        const first = await fetchSessionProducts(spcSt, sessionId, 1, 100);
+        if (first.code !== 0) {
+            const msg = first.code === 30001 ? "Cookie hết hạn — cần cập nhật lại" : `Lỗi API (code ${first.code})`;
+            return res.status(400).json({ success: false, error: msg });
+        }
+
+        let products = first.data.list || [];
+        const totalPage = first.data.totalPage || 1;
+        if (totalPage > 1) {
+            const pages = Array.from({ length: totalPage - 1 }, (_, i) => i + 2);
+            const rest = await runPool(pages, (p) => fetchSessionProducts(spcSt, sessionId, p, 100), Math.min(4, pages.length), null);
+            for (const r of rest) {
+                if (r?.code === 0 && r.data?.list) products = [...products, ...r.data.list];
+            }
+        }
+
+        sessionProductsCache[cacheKey] = { data: products, total: first.data.total, at: Date.now() };
+        res.json({ success: true, data: products, total: first.data.total, cached: false });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.response ? `HTTP ${err.response.status}` : err.message });
     }
 });
 
