@@ -1,13 +1,14 @@
+import "dotenv/config";
 import express from "express";
 import axios from "axios";
 import https from "https";
 import cron from "node-cron";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, getDocs, getDocsFromServer, query } from "firebase/firestore";
+import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDoc, where } from "firebase/firestore";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
-import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel } from "./sheetSync.js";
+import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory } from "./sheetSync.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -308,6 +309,35 @@ async function fetchAccountCommission(account, start, end) {
     }
 }
 
+// ── Snapshot sản phẩm (cho báo cáo "Top sản phẩm bán chạy") ─────────────────
+// Mỗi lần dashboard xem chi tiết 1 phiên live, lưu lại (ghi đè) trạng thái sản
+// phẩm mới nhất vào Firestore collection "productSnapshots". Doc ID cố định
+// theo account+session nên không bị nhân đôi số liệu khi lưu nhiều lần cùng
+// 1 phiên — chỉ giữ lại số liệu tích luỹ mới nhất tại thời điểm lưu.
+async function saveProductSnapshot(accountKey, sessionId, products, dateVN, sessionTitle) {
+    try {
+        const docId = `${accountKey}__${sessionId}`;
+        const items = (products || []).map((p) => ({
+            id:      p.itemId ?? p.productId ?? null,
+            name:    p.title || "(Không tên)",
+            revenue: Number(p.confirmedRevenue) || 0,
+            qty:     Number(p.confirmedItemSold) || 0,
+            orders:  Number(p.confirmedOrderCnt) || 0,
+        }));
+        await setDoc(doc(db, "productSnapshots", docId), {
+            accountKey,
+            owner: getOwner(accountKey),
+            sessionId: String(sessionId),
+            sessionTitle: sessionTitle || "",
+            dateVN,
+            updatedAt: Date.now(),
+            products: items,
+        });
+    } catch (err) {
+        console.warn(`⚠️  Không lưu được snapshot sản phẩm (${accountKey}/${sessionId}):`, err.message);
+    }
+}
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -338,7 +368,7 @@ app.get("/api/stats", async (req, res) => {
 // Chi tiết sản phẩm đang bán trong 1 phiên live — ?account=<key>&sessionId=<id>
 app.get("/api/session-products", async (req, res) => {
     try {
-        const { account, sessionId } = req.query;
+        const { account, sessionId, sessionTitle, startTime } = req.query;
         if (!account || !sessionId) {
             return res.status(400).json({ success: false, error: "Thiếu tham số account hoặc sessionId" });
         }
@@ -374,6 +404,11 @@ app.get("/api/session-products", async (req, res) => {
 
         sessionProductsCache[cacheKey] = { data: products, total: first.data.total, at: Date.now() };
         res.json({ success: true, data: products, total: first.data.total, cached: false });
+
+        // Lưu snapshot cho báo cáo top sản phẩm — chạy nền, không chặn response.
+        const startMs = startTime ? (Number(startTime) < 1e12 ? Number(startTime) * 1000 : Number(startTime)) : Date.now();
+        const dateVN = new Date(startMs + 7 * 3600_000).toISOString().slice(0, 10);
+        saveProductSnapshot(account, sessionId, products, dateVN, sessionTitle);
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.response ? `HTTP ${err.response.status}` : err.message });
@@ -464,6 +499,134 @@ app.post("/api/sync-sheet", async (req, res) => {
         res.json({ success: true, ...result });
     } catch (err) {
         console.error("❌ Lỗi đồng bộ Sheet (thủ công):", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── BÁO CÁO ──────────────────────────────────────────────────────────────────
+
+// Trả về thứ Hai (yyyy-mm-dd, GMT+7) của tuần chứa dateStr
+function mondayOfWeek(dateStr) {
+    const d = new Date(dateStr + "T00:00:00+07:00");
+    const dow = d.getDay(); // 0=CN..6=T7
+    const diff = dow === 0 ? -6 : 1 - dow;
+    d.setDate(d.getDate() + diff);
+    return d.toISOString().slice(0, 10);
+}
+function addDaysStr(dateStr, n) {
+    const d = new Date(dateStr + "T00:00:00+07:00");
+    d.setDate(d.getDate() + n);
+    return d.toISOString().slice(0, 10);
+}
+
+function groupByOwner(entries) {
+    // entries: [{owner, commission, orders}]
+    const map = {};
+    for (const e of entries) {
+        const key = e.owner || "Chưa phân công";
+        if (!map[key]) map[key] = { owner: key, commission: 0, orders: 0, accounts: 0 };
+        map[key].commission += e.commission || 0;
+        map[key].orders += e.orders || 0;
+        map[key].accounts += 1;
+    }
+    const list = Object.values(map).sort((a, b) => b.commission - a.commission);
+    const total = list.reduce((a, r) => a + r.commission, 0);
+    return list.map((r) => ({ ...r, share: total > 0 ? r.commission / total : 0 }));
+}
+
+// Bảng xếp hạng theo người phụ trách — ?period=day|week&date=YYYY-MM-DD
+app.get("/api/reports/ranking", async (req, res) => {
+    try {
+        const period = req.query.period === "week" ? "week" : "day";
+        const todayVN = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+        const dateStr = req.query.date || todayVN;
+
+        if (period === "day") {
+            const { data } = await getCommissionForDate(dateStr);
+            const entries = data.map((a) => ({ owner: a.owner, commission: a.error ? 0 : (a.commission || 0), orders: a.error ? 0 : (a.totalOrders || 0) }));
+            return res.json({ success: true, period, date: dateStr, ranking: groupByOwner(entries) });
+        }
+
+        // period === "week" → dùng dữ liệu đã đồng bộ trong tab PHỤ TRÁCH (không gọi lại API Shopee)
+        const monday = mondayOfWeek(dateStr);
+        const weekDayLabels = Array.from({ length: 7 }, (_, i) => formatDayLabel(addDaysStr(monday, i)));
+        const history = await readPhuTrachHistory(60);
+        const relevantLabels = history.days.filter((d) => weekDayLabels.includes(d));
+
+        const entries = [];
+        for (const key of history.accounts) {
+            let sum = 0;
+            for (const label of relevantLabels) {
+                const v = history.matrix[key]?.[label];
+                if (typeof v === "number") sum += v;
+            }
+            entries.push({ owner: getOwner(key), commission: sum, orders: 0 });
+        }
+        res.json({ success: true, period, date: dateStr, weekStart: monday, days: relevantLabels, ranking: groupByOwner(entries) });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Biểu đồ xu hướng hoa hồng nhiều ngày — ?days=14 — đọc từ dữ liệu Sheet đã đồng bộ
+app.get("/api/reports/trend", async (req, res) => {
+    try {
+        const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
+        const history = await readPhuTrachHistory(days);
+
+        const owners = [...new Set(history.accounts.map((k) => getOwner(k)).filter(Boolean))].sort();
+        const series = history.days.map((label) => {
+            let total = 0;
+            const byOwner = {};
+            for (const o of owners) byOwner[o] = 0;
+            for (const key of history.accounts) {
+                const v = history.matrix[key]?.[label];
+                if (typeof v !== "number") continue;
+                total += v;
+                const o = getOwner(key);
+                if (o) byOwner[o] = (byOwner[o] || 0) + v;
+            }
+            return { label, total, byOwner };
+        });
+
+        res.json({ success: true, days: history.days, owners, series });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Top sản phẩm bán chạy — ?days=7&owner=HIẾU (tuỳ chọn)
+app.get("/api/reports/top-products", async (req, res) => {
+    try {
+        const days = Math.min(60, Math.max(1, Number(req.query.days) || 7));
+        const ownerFilter = req.query.owner || null;
+        const todayVN = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+        const startDate = addDaysStr(todayVN, -(days - 1));
+
+        const snap = await getDocsFromServer(
+            query(collection(db, "productSnapshots"), where("dateVN", ">=", startDate))
+        );
+
+        const map = {}; // key: tên sản phẩm → { name, revenue, qty, orders, sessions:Set }
+        snap.forEach((d) => {
+            const s = d.data();
+            if (ownerFilter && s.owner !== ownerFilter) return;
+            for (const p of s.products || []) {
+                const k = p.name;
+                if (!map[k]) map[k] = { name: p.name, revenue: 0, qty: 0, orders: 0, sessions: 0 };
+                map[k].revenue += p.revenue || 0;
+                map[k].qty += p.qty || 0;
+                map[k].orders += p.orders || 0;
+                map[k].sessions += 1;
+            }
+        });
+
+        const list = Object.values(map).sort((a, b) => b.revenue - a.revenue);
+        res.json({ success: true, days, from: startDate, to: todayVN, products: list.slice(0, 50) });
+    } catch (err) {
+        console.error(err);
         res.status(500).json({ success: false, error: err.message });
     }
 });

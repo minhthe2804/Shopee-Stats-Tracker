@@ -229,3 +229,62 @@ export async function syncCommissionToPhuTrachSheet(
 
     return { column: newCol, rows: accountRows.length, cleared: clearedCount };
 }
+
+// ── Đọc lịch sử hoa hồng nhiều ngày từ tab PHỤ TRÁCH ─────────────────────────
+// Dùng cho báo cáo (biểu đồ xu hướng, xếp hạng theo tuần) — tận dụng lại dữ
+// liệu đã đồng bộ mỗi ngày thay vì gọi lại API Shopee.
+// Trả về: { days: ["dd.mm", ...] (cũ→mới), accounts: [key,...], matrix: { key: { "dd.mm": number|null } } }
+export async function readPhuTrachHistory(
+    maxDays = 30,
+    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "HH HÔM QUA"
+) {
+    const sheets = await getSheets();
+
+    const row1Res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tabName}!1:1` });
+    const row1Values = row1Res.data.values?.[0] || [];
+    const accountColIdx0 = row1Values.findIndex((h) => (h || "").trim() === accountHeader);
+    if (accountColIdx0 === -1) throw new Error(`Không tìm thấy cột "${accountHeader}" trong tab "${tabName}"`);
+    const accountColLetter = colLetter(accountColIdx0 + 1);
+
+    // Các cột ngày là những cột có tiêu đề dạng "dd.mm" (khác ACCOUNT / HH HÔM QUA).
+    // Nhờ cách chèn cột của syncCommissionToPhuTrachSheet, các cột này đã nằm
+    // theo thứ tự thời gian tăng dần từ trái sang phải.
+    const dayCols = [];
+    for (let i = 0; i < row1Values.length; i++) {
+        if (i === accountColIdx0) continue;
+        const header = (row1Values[i] || "").trim();
+        if (header === anchorHeader) continue;
+        if (extractDayMonth(header)) dayCols.push({ label: header, colIdx0: i });
+    }
+    const selected = dayCols.slice(-maxDays);
+
+    const accountColRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID, range: `${tabName}!${accountColLetter}2:${accountColLetter}`,
+    });
+    const accountRows = (accountColRes.data.values || []).map((r) => r[0]).filter(Boolean);
+    if (accountRows.length === 0 || selected.length === 0) {
+        return { days: selected.map((d) => d.label), accounts: accountRows, matrix: {} };
+    }
+    const lastRow = 1 + (accountColRes.data.values || []).length;
+
+    // Đọc gộp toàn bộ các cột ngày cần thiết trong 1 lần gọi API
+    const ranges = selected.map((d) => `${tabName}!${colLetter(d.colIdx0 + 1)}2:${colLetter(d.colIdx0 + 1)}${lastRow}`);
+    const batchRes = await sheets.spreadsheets.values.batchGet({
+        spreadsheetId: SPREADSHEET_ID, ranges, valueRenderOption: "UNFORMATTED_VALUE",
+    });
+    const valueRanges = batchRes.data.valueRanges || [];
+
+    const matrix = {};
+    for (let ai = 0; ai < accountRows.length; ai++) {
+        const key = accountRows[ai];
+        if (!key) continue;
+        matrix[key] = {};
+        for (let di = 0; di < selected.length; di++) {
+            const raw = valueRanges[di]?.values?.[ai]?.[0];
+            const num = typeof raw === "number" ? raw : (raw != null && raw !== "" && !isNaN(Number(raw)) ? Number(raw) : null);
+            matrix[key][selected[di].label] = num;
+        }
+    }
+
+    return { days: selected.map((d) => d.label), accounts: accountRows, matrix };
+}
