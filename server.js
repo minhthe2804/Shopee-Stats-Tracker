@@ -26,6 +26,19 @@ try {
 }
 const getOwner = (key) => OWNERS[key] || null;
 
+// ── Người phụ trách tài khoản Shopee Video ───────────────────────────────────
+// owners_video.json: { "accountKey": "TÊN NGƯỜI PHỤ TRÁCH VIDEO", ... }
+// Đây là mapping RIÊNG cho phần hoa hồng đến từ nguồn "Shopee Video" — tách biệt
+// với OWNERS (người phụ trách hoa hồng livestream) ở trên.
+let OWNERS_VIDEO = {};
+try {
+    OWNERS_VIDEO = JSON.parse(fs.readFileSync(path.join(__dirname, "owners_video.json"), "utf-8"));
+    console.log(`✅ Đã tải ${Object.keys(OWNERS_VIDEO).length} mapping người phụ trách Shopee Video`);
+} catch {
+    console.warn("⚠️  Không tìm thấy owners_video.json — bỏ qua, mọi tài khoản sẽ không có người phụ trách video");
+}
+const getOwnerVideo = (key) => OWNERS_VIDEO[key] || null;
+
 // ── Firebase config ──────────────────────────────────────────────────────────
 let firebaseConfig;
 if (process.env.FIREBASE_API_KEY) {
@@ -229,26 +242,42 @@ async function fetchCommissionPage(spcSt, pageNum, start, end) {
     return data;
 }
 
-function calcCommission(orders) {
-    let sum = 0;
+// ── Phân loại nguồn traffic: Shopee Video vs nguồn khác ──────────────────────
+// Mỗi checkout (o) trong response của API affiliate có field internal_source.
+// Khi đơn đến từ Shopee Video, Shopee trả về internal_source = "Shopeevideo-Shopee".
+// Các nguồn khác (Facebook, untracked, v.v.) sẽ có internal_source rỗng hoặc khác giá trị này.
+function isVideoOrder(o) {
+    return o.internal_source === "Shopeevideo-Shopee";
+}
+
+// filterFn (tuỳ chọn): nhận vào 1 checkout `o`, trả về true nếu muốn tính hoa
+// hồng của checkout đó. Không truyền filterFn → tính TẤT CẢ (hành vi cũ, không đổi).
+function calcCommission(orders, filterFn = null) {
+    // Cộng dồn giá trị THÔ (chưa làm tròn) trước, chỉ làm tròn 1 LẦN DUY NHẤT ở
+    // cuối cùng — thay vì làm tròn từng đơn rồi mới cộng. Làm tròn riêng từng đơn
+    // (mỗi đơn sai số tối đa ±0,5đ) rồi cộng hàng trăm đơn có thể để lại dư vài
+    // đồng do sai số không triệt tiêu hết; cộng thô trước tránh được việc đó và
+    // khớp với cách Shopee tự tính tổng trên dashboard của họ.
+    let sumRaw = 0;
     for (const o of orders) {
         if (o.conversion_status === 4) continue; // bỏ đơn huỷ
-        sum += Number(o.linked_mcn_commission_rate) === 100000
-            ? Math.round(o.estimated_total_commission_with_mcn / 100000)
-            : Math.round(o.estimated_total_commission / 100000);
+        if (filterFn && !filterFn(o)) continue;
+        sumRaw += Number(o.linked_mcn_commission_rate) === 100000
+            ? o.estimated_total_commission_with_mcn
+            : o.estimated_total_commission;
     }
-    return sum;
+    return Math.round(sumRaw / 100000);
 }
 
 async function fetchAccountCommission(account, start, end) {
     if (account.deactive === true) return null;
     const spcSt = getSpcStCookie(account);
-    if (!spcSt) return { key: account.key, error: "Không tìm thấy cookie SPC_ST", commission: 0, orders: [] };
+    if (!spcSt) return { key: account.key, error: "Không tìm thấy cookie SPC_ST", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
 
     try {
         const first = await fetchCommissionPage(spcSt, 1, start, end);
         if (!first?.data || first.data.total_count == null) {
-            return { key: account.key, error: "Cookie hết hạn hoặc phản hồi không hợp lệ", commission: 0, orders: [] };
+            return { key: account.key, error: "Cookie hết hạn hoặc phản hồi không hợp lệ", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
         }
 
         const totalCount = first.data.total_count || 0;
@@ -269,20 +298,44 @@ async function fetchAccountCommission(account, start, end) {
             const commission = Number(o.linked_mcn_commission_rate) === 100000
                 ? Math.round(o.estimated_total_commission_with_mcn / 100000)
                 : Math.round(o.estimated_total_commission / 100000);
+            const source = isVideoOrder(o) ? "video" : "other";
 
             if (o.orders && o.orders.length > 0) {
-                for (const ord of o.orders) {
+                // Hoa hồng `commission` ở trên là của CẢ checkout, không phải của
+                // từng đơn riêng lẻ. Nếu 1 checkout có nhiều đơn (o.orders.length > 1)
+                // mà gán nguyên `commission` cho MỖI đơn thì khi cộng tổng theo đơn sẽ
+                // bị NHÂN ĐÔI (nhân ba...) hoa hồng thật. Ở đây chia tỉ lệ theo giá trị
+                // đơn hàng (itemValue) cho từng đơn, đơn cuối nhận phần dư làm tròn để
+                // tổng của các đơn trong checkout luôn khớp CHÍNH XÁC với `commission`.
+                const itemValues = o.orders.map(
+                    (ord) => Math.round((ord.items?.reduce((a, i) => a + (i.actual_amount || 0), 0) || 0) / 100000)
+                );
+                const totalItemValue = itemValues.reduce((a, v) => a + v, 0);
+                let allocated = 0;
+                o.orders.forEach((ord, idx) => {
+                    const isLast = idx === o.orders.length - 1;
+                    let share;
+                    if (isLast) {
+                        share = commission - allocated; // phần dư, đảm bảo tổng khớp
+                    } else if (totalItemValue > 0) {
+                        share = Math.round(commission * (itemValues[idx] / totalItemValue));
+                    } else {
+                        share = Math.round(commission / o.orders.length);
+                    }
+                    allocated += share;
+
                     const firstItem = ord.items?.[0];
                     flatOrders.push({
                         orderId:      ord.order_sn,
                         status:       o.conversion_status,
-                        commission,
-                        itemValue:    Math.round((ord.items?.reduce((a, i) => a + (i.actual_amount || 0), 0) || 0) / 100000),
+                        commission:   share,
+                        itemValue:    itemValues[idx],
                         purchaseTime: o.purchase_time,
                         productName:  firstItem?.item_name || "",
                         mcnRate:      o.linked_mcn_commission_rate,
+                        source,
                     });
-                }
+                });
             } else {
                 // fallback nếu không có orders[]
                 flatOrders.push({
@@ -293,6 +346,7 @@ async function fetchAccountCommission(account, start, end) {
                     purchaseTime: o.purchase_time,
                     productName:  "",
                     mcnRate:      o.linked_mcn_commission_rate,
+                    source,
                 });
             }
         }
@@ -300,12 +354,14 @@ async function fetchAccountCommission(account, start, end) {
         return {
             key: account.key,
             error: null,
-            commission: calcCommission(orders),
+            commission: calcCommission(orders),           // tổng hoa hồng (mọi nguồn)
+            commissionVideo: calcCommission(orders, isVideoOrder),                       // riêng phần Shopee Video
+            commissionOther: calcCommission(orders, (o) => !isVideoOrder(o)),             // phần còn lại (Facebook, untracked...)
             totalOrders: totalCount,
             orders: flatOrders,
         };
     } catch (err) {
-        return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", commission: 0, orders: [] };
+        return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
     }
 }
 
@@ -428,7 +484,7 @@ async function getCommissionForDate(dateStr, force = false) {
     const t0 = Date.now();
 
     const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
-    const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
+    const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), ownerVideo: getOwnerVideo(r.key) }));
 
     console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 
@@ -445,6 +501,61 @@ app.get("/api/commission", async (req, res) => {
 
         const { data, fetchedAt, cached } = await getCommissionForDate(dateStr, force);
         res.json({ success: true, data, fetchedAt, cached, date: dateStr });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── Hoa hồng theo khoảng thời gian ───────────────────────────────────────────
+// ?from=YYYY-MM-DD&to=YYYY-MM-DD (tối đa 31 ngày) — gọi 1 lần API Shopee cho
+// toàn bộ khoảng, không lặp theo từng ngày, nên nhanh hơn nhiều so với việc
+// tự cộng dồn dữ liệu của N ngày lẻ.
+const MAX_RANGE_DAYS = 31;
+
+function daysBetweenInclusive(fromStr, toStr) {
+    const a = new Date(fromStr + "T00:00:00+07:00");
+    const b = new Date(toStr   + "T00:00:00+07:00");
+    return Math.round((b - a) / 86_400_000) + 1;
+}
+
+async function getCommissionForRange(fromStr, toStr, force = false) {
+    const cacheKey = `${fromStr}_${toStr}`;
+    if (!force && commCache[cacheKey] && Date.now() - commCache[cacheKey].at < COMM_CACHE_TTL) {
+        return { data: commCache[cacheKey].data, fetchedAt: commCache[cacheKey].at, cached: true };
+    }
+
+    const start = dayRange(fromStr).start;
+    const end   = dayRange(toStr).end;
+    const accounts = await getAccountsFromFirestore();
+    const t0 = Date.now();
+
+    const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
+    const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), ownerVideo: getOwnerVideo(r.key) }));
+
+    console.log(`✅ Commission [${fromStr} → ${toStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
+
+    commCache[cacheKey] = { data: results, at: Date.now() };
+    return { data: results, fetchedAt: commCache[cacheKey].at, cached: false };
+}
+
+app.get("/api/commission-range", async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        const force = req.query.refresh === "1";
+        if (!from || !to) {
+            return res.status(400).json({ success: false, error: "Thiếu tham số from hoặc to (dạng YYYY-MM-DD)" });
+        }
+        if (new Date(from + "T00:00:00+07:00") > new Date(to + "T00:00:00+07:00")) {
+            return res.status(400).json({ success: false, error: "Ngày bắt đầu phải trước ngày kết thúc" });
+        }
+        const numDays = daysBetweenInclusive(from, to);
+        if (numDays > MAX_RANGE_DAYS) {
+            return res.status(400).json({ success: false, error: `Khoảng thời gian tối đa ${MAX_RANGE_DAYS} ngày (đang chọn ${numDays} ngày)` });
+        }
+
+        const { data, fetchedAt, cached } = await getCommissionForRange(from, to, force);
+        res.json({ success: true, data, fetchedAt, cached, from, to, days: numDays });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.message });
@@ -563,6 +674,50 @@ app.get("/api/reports/ranking", async (req, res) => {
             entries.push({ owner: getOwner(key), commission: sum, orders: 0 });
         }
         res.json({ success: true, period, date: dateStr, weekStart: monday, days: relevantLabels, ranking: groupByOwner(entries) });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Bảng xếp hạng hoa hồng SHOPEE VIDEO — nhóm theo ownerVideo (owners_video.json).
+// Dùng field commissionVideo (đã tách theo internal_source === "Shopeevideo-Shopee")
+// thay vì gọi thêm API riêng — vì Shopee trả chung 1 API cho mọi nguồn traffic.
+// ?date=YYYY-MM-DD (1 ngày, mặc định hôm nay) HOẶC ?from=...&to=... (khoảng ngày, tối đa 31 ngày)
+app.get("/api/reports/ranking-video", async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        const todayVN = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+
+        let data, rangeInfo;
+        if (from && to) {
+            if (new Date(from + "T00:00:00+07:00") > new Date(to + "T00:00:00+07:00")) {
+                return res.status(400).json({ success: false, error: "Ngày bắt đầu phải trước ngày kết thúc" });
+            }
+            const numDays = daysBetweenInclusive(from, to);
+            if (numDays > MAX_RANGE_DAYS) {
+                return res.status(400).json({ success: false, error: `Khoảng thời gian tối đa ${MAX_RANGE_DAYS} ngày (đang chọn ${numDays} ngày)` });
+            }
+            ({ data } = await getCommissionForRange(from, to));
+            rangeInfo = { from, to, days: numDays };
+        } else {
+            const dateStr = req.query.date || todayVN;
+            ({ data } = await getCommissionForDate(dateStr));
+            rangeInfo = { date: dateStr };
+        }
+
+        // Chỉ tính những tài khoản THỰC SỰ có hoa hồng từ Shopee Video (>0) hoặc có
+        // gán ownerVideo — tránh những tài khoản livestream thuần (commissionVideo=0,
+        // ownerVideo=null) làm loãng bảng xếp hạng.
+        const entries = data
+            .filter((a) => !a.error && (a.ownerVideo || (a.commissionVideo || 0) > 0))
+            .map((a) => ({
+                owner: a.ownerVideo || "Chưa phân công",
+                commission: a.commissionVideo || 0,
+                orders: (a.orders || []).filter((o) => o.source === "video").length,
+            }));
+
+        res.json({ success: true, ...rangeInfo, ranking: groupByOwner(entries) });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.message });

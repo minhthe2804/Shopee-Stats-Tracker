@@ -90,6 +90,10 @@
 
     /* ── SUMMARY BAR ── */
     .summary-bar { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:24px; }
+    .summary-bar-6 { grid-template-columns:repeat(6,1fr); }
+    .source-badge { font-size:9.5px; font-weight:700; border-radius:4px; padding:1px 6px; display:inline-flex; align-items:center; gap:3px; white-space:nowrap; }
+    .source-badge.video { color:var(--purple); background:var(--purple-dim); border:1px solid rgba(168,85,247,0.3); }
+    .source-badge.other { color:var(--text-muted); background:var(--surface2); border:1px solid var(--border2); }
     .summary-card {
       background:var(--surface); border:1px solid var(--border);
       border-radius:var(--radius); padding:16px 18px; transition:border-color 0.15s;
@@ -302,12 +306,12 @@
       .main { padding:16px 16px 32px; }
       .header { padding:0 16px; }
       .tabs { padding:0 16px; }
-      .summary-bar { grid-template-columns:repeat(2,1fr); }
+      .summary-bar, .summary-bar-6 { grid-template-columns:repeat(2,1fr); }
       .toolbar { flex-direction:column; align-items:stretch; }
       .search-wrap { max-width:100%; }
     }
     @media (max-width:600px) {
-      .summary-bar { grid-template-columns:1fr 1fr; }
+      .summary-bar, .summary-bar-6 { grid-template-columns:1fr 1fr; }
       .cards-grid { grid-template-columns:1fr 1fr; }
     }
   </style>
@@ -418,17 +422,21 @@
 
   /* ── ACCOUNT CARD (commission) ── */
   function CommAccountCard({ account, active, onClick }) {
-    const { key, error, commission=0, totalOrders=0, owner } = account;
+    const { key, error, commission=0, commissionVideo=0, totalOrders=0, owner, ownerVideo } = account;
     return <div className={`account-card ${active?"active":""} ${error?"error-card":""}`} onClick={onClick} title={active?"Bỏ lọc":"Lọc theo tài khoản này"}>
       <div className="card-header">
         <div className={`card-dot ${error?"err":""}`} />
         <div className="card-name">{key}</div>
       </div>
-      {owner && <div style={{fontSize:11,color:"var(--text-muted)",marginTop:-8,marginBottom:10}}>👤 {owner}</div>}
+      {(owner || ownerVideo) && <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:-8,marginBottom:10}}>
+        {owner      && <span style={{fontSize:11,color:"var(--text-muted)"}}>👤 {owner}</span>}
+        {ownerVideo && <span className="source-badge video">🎬 {ownerVideo}</span>}
+      </div>}
       {error ? <div className="card-error">⚠ {error}</div> : (
         <div className="card-stats">
           <div><div className="card-stat-label">Đơn hàng</div><div className="card-stat-value">{fmtNum(totalOrders)}</div></div>
           <div><div className="card-stat-label">Hoa hồng</div><div className="card-stat-value yellow" style={{fontSize:14}}>{fmtK(commission)}</div></div>
+          {commissionVideo > 0 && <div style={{gridColumn:"1 / -1"}}><div className="card-stat-label">🎬 Trong đó Video</div><div className="card-stat-value" style={{fontSize:13,color:"var(--purple)"}}>{fmtK(commissionVideo)}</div></div>}
         </div>
       )}
     </div>;
@@ -589,7 +597,12 @@
     return <tr>
       <td><span className="account-tag">{accountKey}</span></td>
       <td><div className="order-id">{order.orderId}</div></td>
-      <td style={{maxWidth:200}}><div className="product-name" title={order.productName}>{order.productName || "—"}</div></td>
+      <td style={{maxWidth:200}}>
+        <div className="product-name" title={order.productName}>{order.productName || "—"}</div>
+        {order.source === "video"
+          ? <span className="source-badge video" style={{marginTop:4}}>🎬 Video</span>
+          : <span className="source-badge other" style={{marginTop:4}}>Khác</span>}
+      </td>
       <td><OrderStatus status={order.status}/></td>
       <td className="num right">{fmtVND(order.itemValue)}</td>
       <td className="num yellow right">{fmtVND(order.commission)}</td>
@@ -798,13 +811,19 @@
      TAB: HOA HỒNG
   ══════════════════════════════════════ */
   function CommissionTab() {
+    const [mode,          setMode]         = useState("day"); // "day" | "range"
     const [date,          setDate]         = useState(todayVN());
+    const [rangeFrom,     setRangeFrom]    = useState(todayVN());
+    const [rangeTo,       setRangeTo]      = useState(todayVN());
+    const [rangeErr,      setRangeErr]     = useState("");
     const [state,         setState]        = useState("idle");
     const [data,          setData]         = useState([]);
     const [fetchedAt,     setFetchedAt]    = useState(null);
     const [cached,        setCached]       = useState(false);
     const [activeAccount, setActiveAccount]= useState("all");
     const [ownerFilter,   setOwnerFilter]  = useState("all");
+    const [ownerVideoFilter, setOwnerVideoFilter] = useState("all");
+    const [sourceFilter,  setSourceFilter] = useState("all"); // "all" | "video" | "other"
     const [searchQ,       setSearchQ]      = useState("");
     const [statusFilter,  setStatusFilter] = useState("all");
     const [sortField,     setSortField]    = useState("purchaseTime");
@@ -814,7 +833,7 @@
     const [spinning,      setSpinning]     = useState(false);
 
     const loadCommission = useCallback(async (d, force=false) => {
-      setState("loading"); setSpinning(true);
+      setState("loading"); setSpinning(true); setRangeErr("");
       try {
         const url = `/api/commission?date=${d}${force?"&refresh=1":""}`;
         const res  = await fetch(url);
@@ -829,18 +848,53 @@
       finally { setSpinning(false); }
     }, []);
 
-    useEffect(() => { loadCommission(date); }, [date]);
+    const loadCommissionRange = useCallback(async (from, to, force=false) => {
+      setState("loading"); setSpinning(true); setRangeErr("");
+      try {
+        const url = `/api/commission-range?from=${from}&to=${to}${force?"&refresh=1":""}`;
+        const res  = await fetch(url);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setData(json.data);
+        setFetchedAt(json.fetchedAt);
+        setCached(json.cached||false);
+        setState("ok");
+        setPage(1);
+      } catch(e) { setState("error"); setRangeErr(e.message); }
+      finally { setSpinning(false); }
+    }, []);
+
+    useEffect(() => {
+      if (mode === "day") loadCommission(date);
+      else if (rangeFrom && rangeTo) loadCommissionRange(rangeFrom, rangeTo);
+    }, [mode, date]);
+
+    const applyRange = () => {
+      if (!rangeFrom || !rangeTo) return;
+      if (rangeFrom > rangeTo) { setRangeErr("Ngày bắt đầu phải trước ngày kết thúc"); return; }
+      loadCommissionRange(rangeFrom, rangeTo);
+    };
+
+    const refresh = () => {
+      if (mode === "day") loadCommission(date, true);
+      else applyRangeForce();
+    };
+    const applyRangeForce = () => {
+      if (!rangeFrom || !rangeTo || rangeFrom > rangeTo) return;
+      loadCommissionRange(rangeFrom, rangeTo, true);
+    };
 
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
 
-    const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
+    const owners      = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
+    const ownersVideo = useMemo(() => [...new Set(data.map(a=>a.ownerVideo).filter(Boolean))].sort(), [data]);
 
     // Flatten all orders
     const allOrders = useMemo(() => {
       const rows = [];
       for (const acc of data) {
         if (acc.error || !acc.orders?.length) continue;
-        for (const o of acc.orders) rows.push({...o, _accountKey: acc.key, _owner: acc.owner});
+        for (const o of acc.orders) rows.push({...o, _accountKey: acc.key, _owner: acc.owner, _ownerVideo: acc.ownerVideo});
       }
       return rows;
     }, [data]);
@@ -849,13 +903,16 @@
       let rows = allOrders;
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
       if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
+      if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
+      if (sourceFilter === "video") rows = rows.filter(o => o.source === "video");
+      if (sourceFilter === "other") rows = rows.filter(o => o.source !== "video");
       if (statusFilter === "cancelled") rows = rows.filter(o => o.status === 4);
       if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== 4);
       if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
       return [...rows].sort((a,b)=>{ const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
-    }, [allOrders, activeAccount, ownerFilter, statusFilter, searchQ, sortField, sortDir]);
+    }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ, sortField, sortDir]);
 
-    useEffect(() => setPage(1), [activeAccount, ownerFilter, statusFilter, searchQ]);
+    useEffect(() => setPage(1), [activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ]);
 
     const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
     const currentPage = Math.min(page, totalPages);
@@ -863,9 +920,31 @@
 
     const summary = useMemo(() => {
       const valid = filtered.filter(o => o.status !== 4);
+
+      // "Hoa hồng (hợp lệ)" — cộng số hoa hồng CHÍNH XÁC từ backend (đã cộng thô,
+      // làm tròn 1 lần — xem calcCommission ở server.js) khi bộ lọc hiện tại bao
+      // trọn TOÀN BỘ đơn hợp lệ của 1 tài khoản (vd: tìm đúng tên tài khoản, không
+      // lọc theo tên sản phẩm/mã đơn). Nếu bộ lọc chỉ khớp MỘT PHẦN đơn của tài
+      // khoản đó (vd: tìm theo tên sản phẩm), phải cộng theo số hiển thị từng dòng
+      // — khi đó có thể lệch vài đồng do làm tròn mỗi dòng, không tránh được vì
+      // backend chỉ có tổng của CẢ tài khoản, không tách được theo từng sản phẩm.
+      const validByAccount = {};
+      for (const o of valid) (validByAccount[o._accountKey] ||= []).push(o);
+
+      let filteredComm = 0;
+      for (const acc of data) {
+        const matched = validByAccount[acc.key];
+        if (!matched) continue;
+        const totalValidForAcc = (acc.orders || []).filter(o => o.status !== 4).length;
+        filteredComm += matched.length === totalValidForAcc
+          ? (acc.commission || 0)                                     // khớp trọn vẹn → dùng số chính xác
+          : matched.reduce((a, o) => a + (o.commission || 0), 0);     // chỉ khớp 1 phần → cộng theo dòng
+      }
+
       return {
-        totalComm:     data.reduce((a,acc)=>a+(acc.commission||0),0),
-        filteredComm:  valid.reduce((a,o)=>a+(o.commission||0),0),
+        totalComm:      data.reduce((a,acc)=>a+(acc.commission||0),0),
+        totalCommVideo: data.reduce((a,acc)=>a+(acc.commissionVideo||0),0),
+        filteredComm,
         totalOrders:   filtered.length,
         cancelled:     filtered.filter(o=>o.status===4).length,
         accounts:      data.filter(a=>!a.error).length,
@@ -882,27 +961,49 @@
     const isToday = date === todayVN();
 
     return <>
-      {/* DATE NAV */}
+      {/* MODE TOGGLE */}
       <div className="comm-date-bar">
+        <span className="comm-date-label">Xem theo:</span>
+        <button className={`pill ${mode==="day"?"active":""}`} onClick={()=>setMode("day")}>Ngày</button>
+        <button className={`pill ${mode==="range"?"active":""}`} onClick={()=>setMode("range")}>Khoảng thời gian</button>
+      </div>
+
+      {/* DATE NAV */}
+      {mode === "day" ? <div className="comm-date-bar">
         <span className="comm-date-label">Ngày:</span>
         <button className="comm-date-nav" onClick={()=>setDate(d=>offsetDate(d,-1))}><IcoLeft/></button>
         <input type="date" className="date-input" value={date} onChange={e=>setDate(e.target.value)} style={{fontSize:13, padding:"5px 12px"}}/>
         <button className="comm-date-nav" onClick={()=>setDate(d=>offsetDate(d,1))} disabled={isToday} style={{opacity:isToday?0.35:1}}><IcoRight/></button>
         {!isToday && <button className="comm-today-btn" onClick={()=>setDate(todayVN())}>Hôm nay</button>}
-        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={()=>loadCommission(date,true)} style={{marginLeft:4}}>
+        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={refresh} style={{marginLeft:4}}>
           <IcoRefresh/> Làm mới
         </button>
         {fetchedAt && <span className="header-time">
           {cached && <span style={{marginRight:6,fontSize:11,background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:4,padding:"2px 6px",color:"var(--text-muted)"}}>cache</span>}
           {new Date(fetchedAt).toLocaleTimeString("vi-VN")}
         </span>}
-      </div>
+      </div> : <div className="comm-date-bar">
+        <span className="comm-date-label">Từ:</span>
+        <input type="date" className="date-input" value={rangeFrom} max={todayVN()} onChange={e=>setRangeFrom(e.target.value)} style={{fontSize:13, padding:"5px 12px"}}/>
+        <span className="comm-date-label">Đến:</span>
+        <input type="date" className="date-input" value={rangeTo} max={todayVN()} onChange={e=>setRangeTo(e.target.value)} style={{fontSize:13, padding:"5px 12px"}}/>
+        <button className="refresh-btn" onClick={applyRange}>Xem</button>
+        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={refresh} style={{marginLeft:4}}>
+          <IcoRefresh/> Làm mới
+        </button>
+        {fetchedAt && <span className="header-time">
+          {cached && <span style={{marginRight:6,fontSize:11,background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:4,padding:"2px 6px",color:"var(--text-muted)"}}>cache</span>}
+          {new Date(fetchedAt).toLocaleTimeString("vi-VN")}
+        </span>}
+        {rangeErr && <span style={{color:"var(--red)", fontSize:12}}>⚠ {rangeErr}</span>}
+      </div>}
 
       {/* SUMMARY */}
-      <div className="summary-bar">
+      <div className="summary-bar summary-bar-6">
         <div className="summary-card"><div className="summary-card-label">Hoa hồng (tất cả TK)</div><div className="summary-card-value yellow">{fmtVND(summary.totalComm)}</div><div className="summary-card-sub">chưa trừ huỷ</div></div>
         <div className="summary-card"><div className="summary-card-label">Hoa hồng (hợp lệ)</div><div className="summary-card-value green">{fmtVND(summary.filteredComm)}</div><div className="summary-card-sub">trừ đơn huỷ</div></div>
-        <div className="summary-card"><div className="summary-card-label">Tổng đơn</div><div className="summary-card-value">{fmtNum(summary.totalOrders)}</div><div className="summary-card-sub">đơn trong ngày</div></div>
+        <div className="summary-card"><div className="summary-card-label">🎬 Hoa hồng Video</div><div className="summary-card-value purple">{fmtVND(summary.totalCommVideo)}</div><div className="summary-card-sub">trong tổng hoa hồng</div></div>
+        <div className="summary-card"><div className="summary-card-label">Tổng đơn</div><div className="summary-card-value">{fmtNum(summary.totalOrders)}</div><div className="summary-card-sub">{mode==="day"?"đơn trong ngày":"đơn trong khoảng"}</div></div>
         <div className="summary-card"><div className="summary-card-label">Đơn huỷ</div><div className="summary-card-value" style={{color:"var(--red)"}}>{fmtNum(summary.cancelled)}</div><div className="summary-card-sub">không tính hoa hồng</div></div>
         <div className="summary-card"><div className="summary-card-label">Tài khoản</div><div className="summary-card-value">{summary.accounts}</div><div className="summary-card-sub">{data.filter(a=>a.error).length} lỗi</div></div>
       </div>
@@ -944,6 +1045,21 @@
               {owners.map(o=><option key={o} value={o}>{o}</option>)}
             </select>
           </div>
+          {ownersVideo.length > 0 && <>
+            <div className="toolbar-divider"/>
+            <div className="filter-group">
+              <span className="filter-group-label">🎬 PT Video:</span>
+              <select className="sort-select" value={ownerVideoFilter} onChange={e=>setOwnerVideoFilter(e.target.value)}>
+                <option value="all">Tất cả</option>
+                {ownersVideo.map(o=><option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          </>}
+          <div className="toolbar-divider"/>
+          <div className="filter-group">
+            <span className="filter-group-label">Nguồn:</span>
+            {[["all","Tất cả"],["video","🎬 Video"],["other","Khác"]].map(([v,l])=><button key={v} className={`pill ${sourceFilter===v?"active":""}`} onClick={()=>setSourceFilter(v)}>{l}</button>)}
+          </div>
           <div className="toolbar-divider"/>
           <div className="filter-group">
             <span className="filter-group-label">Trạng thái:</span>
@@ -960,11 +1076,13 @@
             </select>
             <button className="sort-dir-btn" onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
           </div>
-          {(searchQ||statusFilter!=="all"||ownerFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");setOwnerFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
+          {(searchQ||statusFilter!=="all"||ownerFilter!=="all"||ownerVideoFilter!=="all"||sourceFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");setOwnerFilter("all");setOwnerVideoFilter("all");setSourceFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
           <ExportBtn disabled={filtered.length===0} onClick={()=>{
             const rows = filtered.map(o => ({
               "Tài khoản":         o._accountKey,
               "Người phụ trách":   o._owner || "",
+              "PT Video":          o._ownerVideo || "",
+              "Nguồn":             o.source === "video" ? "Shopee Video" : "Khác",
               "Mã đơn":            o.orderId || "",
               "Sản phẩm":          o.productName || "",
               "Trạng thái":        ORDER_STATUS[o.status] || o.status || "",
@@ -972,8 +1090,56 @@
               "Hoa hồng":          o.commission || 0,
               "Thời gian mua":     fmtTime(o.purchaseTime),
             }));
-            downloadWorkbook([["Đơn hoa hồng", rows]], `hoa-hong_${date}.xlsx`);
+            const fname = mode==="day" ? `hoa-hong_${date}.xlsx` : `hoa-hong_${rangeFrom}_${rangeTo}.xlsx`;
+            downloadWorkbook([["Đơn hoa hồng", rows]], fname);
           }}/>
+          {mode==="range" && <ExportBtn label="Xuất tổng theo TK" disabled={data.length===0} onClick={()=>{
+            // Tổng hoa hồng CẢ KHOẢNG THỜI GIAN cho từng tài khoản — dùng số
+            // acc.commission chính xác từ backend (đã cộng thô, làm tròn 1 lần),
+            // không cộng lại từ các dòng đơn để tránh sai số làm tròn cộng dồn.
+            const list = (ownerFilter==="all" ? data : data.filter(a=>a.owner===ownerFilter));
+
+            // Sheet 1: Tổng hợp Livestream — mọi tài khoản, KHÔNG có cột PT Video/
+            // Trong đó Video để đỡ rối (đa số tài khoản không có hoa hồng video).
+            const liveRows = [...list]
+              .sort((a,b)=>(b.commission||0)-(a.commission||0))
+              .map(acc => ({
+                "Tài khoản":              acc.key,
+                "Người phụ trách":        acc.owner || "",
+                "Trạng thái":             acc.error ? `Lỗi: ${acc.error}` : "OK",
+                "Tổng đơn":               acc.totalOrders || 0,
+                "Tổng hoa hồng (hợp lệ)": acc.commission || 0,
+              }));
+            const liveTotalRow = {
+              "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "", "Trạng thái": "",
+              "Tổng đơn": liveRows.reduce((s,r)=>s+(r["Tổng đơn"]||0),0),
+              "Tổng hoa hồng (hợp lệ)": liveRows.reduce((s,r)=>s+(r["Tổng hoa hồng (hợp lệ)"]||0),0),
+            };
+
+            // Sheet 2: Tổng hợp Video — liệt kê TẤT CẢ tài khoản (kể cả không có
+            // hoa hồng video), kèm cột PT Video + Trong đó Video riêng.
+            const videoRows = [...list]
+              .sort((a,b)=>(b.commissionVideo||0)-(a.commissionVideo||0))
+              .map(acc => ({
+                "Tài khoản":       acc.key,
+                "PT Video":        acc.ownerVideo || "",
+                "Trạng thái":      acc.error ? `Lỗi: ${acc.error}` : "OK",
+                "Tổng đơn Video":  (acc.orders||[]).filter(o=>o.source==="video").length,
+                "Hoa hồng Video":  acc.commissionVideo || 0,
+              }));
+            const videoTotalRow = {
+              "Tài khoản": "TỔNG CỘNG", "PT Video": "", "Trạng thái": "",
+              "Tổng đơn Video": videoRows.reduce((s,r)=>s+(r["Tổng đơn Video"]||0),0),
+              "Hoa hồng Video": videoRows.reduce((s,r)=>s+(r["Hoa hồng Video"]||0),0),
+            };
+
+            const sheets = [
+              ["Tổng hợp Livestream", [...liveRows, liveTotalRow]],
+              ["Tổng hợp Video",      [...videoRows, videoTotalRow]],
+            ];
+
+            downloadWorkbook(sheets, `hoa-hong_tong-hop-tk_${rangeFrom}_${rangeTo}.xlsx`);
+          }}/>}
         </div>
 
         <div className="result-row">
@@ -990,7 +1156,7 @@
           </tr></thead>
           <tbody>
             {pageRows.length===0
-              ? <tr className="empty-row"><td colSpan={7}><span className="empty-icon">📭</span>Không có đơn hàng nào trong ngày này</td></tr>
+              ? <tr className="empty-row"><td colSpan={7}><span className="empty-icon">📭</span>Không có đơn hàng nào trong {mode==="day"?"ngày này":"khoảng thời gian này"}</td></tr>
               : pageRows.map((o,i)=><OrderRow key={`${o._accountKey}-${o.orderId}-${i}`} order={o} accountKey={o._accountKey}/>)
             }
           </tbody>
@@ -1052,6 +1218,56 @@
           <div className={`rank-medal ${i===0?"r1":i===1?"r2":i===2?"r3":""}`}>{i<3 ? ["🥇","🥈","🥉"][i] : i+1}</div>
           <div className="rank-name" style={{color: i<3 ? ownerColor(r.owner, owners) : "var(--text)"}}>{r.owner}</div>
           <div className="rank-bar-wrap"><div className="rank-bar-fill" style={{width:`${(r.commission/maxCommission*100).toFixed(1)}%`, background:ownerColor(r.owner, owners)}}/></div>
+          <div className="rank-stats">
+            <div className="rank-commission">{fmtVND(r.commission)}</div>
+            <div className="rank-meta">{fmtPct(r.share)} tổng · {r.accounts} tài khoản</div>
+          </div>
+        </div>
+      ))}
+    </div>;
+  }
+
+  /* ── BÁO CÁO: XẾP HẠNG NGƯỜI PHỤ TRÁCH SHOPEE VIDEO ── */
+  function VideoRankingCard() {
+    const [date,    setDate]    = useState(todayVN());
+    const [state,   setState]   = useState("loading");
+    const [ranking, setRanking] = useState([]);
+    const [errMsg,  setErrMsg]  = useState("");
+
+    useEffect(() => {
+      setState("loading");
+      fetch(`/api/reports/ranking-video?date=${date}`)
+        .then(r => r.json())
+        .then(json => { if (!json.success) throw new Error(json.error); setRanking(json.ranking); setState("ok"); })
+        .catch(e => { setErrMsg(e.message); setState("error"); });
+    }, [date]);
+
+    const maxCommission = Math.max(1, ...ranking.map(r => r.commission));
+    const owners = ranking.map(r => r.owner);
+    const isToday = date === todayVN();
+
+    return <div className="report-section">
+      <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16, flexWrap:"wrap", gap:10}}>
+        <div>
+          <div className="report-section-title">🎬 Xếp hạng người phụ trách Shopee Video</div>
+          <div className="report-section-sub" style={{marginBottom:0}}>Hoa hồng phát sinh từ nguồn Shopee Video (internal_source), theo ngày</div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button className="comm-date-nav" onClick={()=>setDate(d=>offsetDate(d,-1))}><IcoLeft/></button>
+          <input type="date" className="date-input" value={date} max={todayVN()} onChange={e=>setDate(e.target.value)} style={{fontSize:13, padding:"5px 12px"}}/>
+          <button className="comm-date-nav" onClick={()=>setDate(d=>offsetDate(d,1))} disabled={isToday} style={{opacity:isToday?0.35:1}}><IcoRight/></button>
+          {!isToday && <button className="comm-today-btn" onClick={()=>setDate(todayVN())}>Hôm nay</button>}
+        </div>
+      </div>
+
+      {state==="loading" && <div style={{color:"var(--text-muted)", fontSize:12, padding:"20px 0"}}>Đang tải...</div>}
+      {state==="error"   && <div style={{color:"var(--red)", fontSize:12, padding:"20px 0"}}>⚠ {errMsg}</div>}
+      {state==="ok" && ranking.length===0 && <div style={{color:"var(--text-muted)", fontSize:12, padding:"20px 0"}}>Chưa có hoa hồng Video trong ngày này.</div>}
+      {state==="ok" && ranking.map((r, i) => (
+        <div className="rank-row" key={r.owner}>
+          <div className={`rank-medal ${i===0?"r1":i===1?"r2":i===2?"r3":""}`}>{i<3 ? ["🥇","🥈","🥉"][i] : i+1}</div>
+          <div className="rank-name" style={{color: i<3 ? ownerColor(r.owner, owners) : "var(--text)"}}>{r.owner}</div>
+          <div className="rank-bar-wrap"><div className="rank-bar-fill" style={{width:`${(r.commission/maxCommission*100).toFixed(1)}%`, background:"var(--purple)"}}/></div>
           <div className="rank-stats">
             <div className="rank-commission">{fmtVND(r.commission)}</div>
             <div className="rank-meta">{fmtPct(r.share)} tổng · {r.accounts} tài khoản</div>
@@ -1250,6 +1466,7 @@
   function ReportsTab() {
     return <>
       <RankingCard/>
+      <VideoRankingCard/>
       <TrendChart/>
       <TopProductsCard/>
       <OwnerExportCard/>
