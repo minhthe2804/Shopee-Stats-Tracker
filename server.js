@@ -223,7 +223,7 @@ function dayRange(dateStr) {
 async function fetchCommissionPage(spcSt, pageNum, start, end) {
     const { data } = await axios.get(
         `https://affiliate.shopee.vn/api/v3/report/list` +
-        `?page_size=500&page_num=${pageNum}&referrer=live` +
+        `?page_size=500&page_num=${pageNum}` +
         `&purchase_time_s=${start}&purchase_time_e=${end}&version=1`,
         {
             headers: {
@@ -242,12 +242,22 @@ async function fetchCommissionPage(spcSt, pageNum, start, end) {
     return data;
 }
 
-// ── Phân loại nguồn traffic: Shopee Video vs nguồn khác ──────────────────────
+// ── Phân loại nguồn traffic: Shopee Video / Shopee Live / Khác ───────────────
 // Mỗi checkout (o) trong response của API affiliate có field internal_source.
-// Khi đơn đến từ Shopee Video, Shopee trả về internal_source = "Shopeevideo-Shopee".
-// Các nguồn khác (Facebook, untracked, v.v.) sẽ có internal_source rỗng hoặc khác giá trị này.
+// Video  → internal_source = "Shopeevideo-Shopee"
+// Live   → internal_source = "Shopeelive-Shopee"
+// Khác   → mọi giá trị còn lại (Facebook, untracked, rỗng, v.v.)
 function isVideoOrder(o) {
     return o.internal_source === "Shopeevideo-Shopee";
+}
+function isLiveOrder(o) {
+    return o.internal_source === "Shopeelive-Shopee";
+}
+// Trả về nhãn nguồn chuẩn hoá dùng chung cho cả object đơn lẻ và flatOrders
+function classifySource(o) {
+    if (isVideoOrder(o)) return "video";
+    if (isLiveOrder(o))  return "live";
+    return "other";
 }
 
 // filterFn (tuỳ chọn): nhận vào 1 checkout `o`, trả về true nếu muốn tính hoa
@@ -272,12 +282,12 @@ function calcCommission(orders, filterFn = null) {
 async function fetchAccountCommission(account, start, end) {
     if (account.deactive === true) return null;
     const spcSt = getSpcStCookie(account);
-    if (!spcSt) return { key: account.key, error: "Không tìm thấy cookie SPC_ST", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
+    if (!spcSt) return { key: account.key, error: "Không tìm thấy cookie SPC_ST", commission: 0, commissionVideo: 0, commissionLive: 0, commissionOther: 0, orders: [] };
 
     try {
         const first = await fetchCommissionPage(spcSt, 1, start, end);
         if (!first?.data || first.data.total_count == null) {
-            return { key: account.key, error: "Cookie hết hạn hoặc phản hồi không hợp lệ", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
+            return { key: account.key, error: "Cookie hết hạn hoặc phản hồi không hợp lệ", commission: 0, commissionVideo: 0, commissionLive: 0, commissionOther: 0, orders: [] };
         }
 
         const totalCount = first.data.total_count || 0;
@@ -298,7 +308,7 @@ async function fetchAccountCommission(account, start, end) {
             const commission = Number(o.linked_mcn_commission_rate) === 100000
                 ? Math.round(o.estimated_total_commission_with_mcn / 100000)
                 : Math.round(o.estimated_total_commission / 100000);
-            const source = isVideoOrder(o) ? "video" : "other";
+            const source = classifySource(o);
 
             if (o.orders && o.orders.length > 0) {
                 // Hoa hồng `commission` ở trên là của CẢ checkout, không phải của
@@ -356,12 +366,13 @@ async function fetchAccountCommission(account, start, end) {
             error: null,
             commission: calcCommission(orders),           // tổng hoa hồng (mọi nguồn)
             commissionVideo: calcCommission(orders, isVideoOrder),                       // riêng phần Shopee Video
-            commissionOther: calcCommission(orders, (o) => !isVideoOrder(o)),             // phần còn lại (Facebook, untracked...)
+            commissionLive:  calcCommission(orders, isLiveOrder),                        // riêng phần Shopee Live
+            commissionOther: calcCommission(orders, (o) => !isVideoOrder(o) && !isLiveOrder(o)), // phần còn lại (Facebook, untracked...)
             totalOrders: totalCount,
             orders: flatOrders,
         };
     } catch (err) {
-        return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", commission: 0, commissionVideo: 0, commissionOther: 0, orders: [] };
+        return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", commission: 0, commissionVideo: 0, commissionLive: 0, commissionOther: 0, orders: [] };
     }
 }
 
