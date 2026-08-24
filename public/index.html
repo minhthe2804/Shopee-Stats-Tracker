@@ -91,6 +91,7 @@
     /* ── SUMMARY BAR ── */
     .summary-bar { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; margin-bottom:24px; }
     .summary-bar-6 { grid-template-columns:repeat(6,1fr); }
+    .summary-bar-7 { grid-template-columns:repeat(7,1fr); }
     .source-badge { font-size:9.5px; font-weight:700; border-radius:4px; padding:1px 6px; display:inline-flex; align-items:center; gap:3px; white-space:nowrap; }
     .source-badge.video { color:var(--purple); background:var(--purple-dim); border:1px solid rgba(168,85,247,0.3); }
     .source-badge.live  { color:var(--blue); background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.3); }
@@ -162,6 +163,18 @@
     .pill { background:var(--surface2); border:1px solid var(--border); border-radius:6px; padding:5px 11px; font-size:12px; font-weight:500; color:var(--text-dim); cursor:pointer; transition:all 0.12s; white-space:nowrap; }
     .pill:hover { border-color:var(--border2); color:var(--text); }
     .pill.active { border-color:var(--orange); color:var(--orange); background:var(--orange-dim); }
+    .source-tab-bar { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+    .source-tab { flex:1; min-width:150px; background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:10px 14px; cursor:pointer; transition:all 0.12s; text-align:left; }
+    .source-tab:hover { border-color:var(--border2); }
+    .source-tab-label { font-size:12px; font-weight:600; color:var(--text-dim); display:flex; align-items:center; gap:5px; }
+    .source-tab-count { font-size:11px; color:var(--text-muted); margin-left:auto; font-weight:500; }
+    .source-tab-comm { font-size:16px; font-weight:700; margin-top:4px; font-variant-numeric:tabular-nums; letter-spacing:-0.3px; color:var(--text); }
+    .source-tab.active { border-width:2px; padding:9px 13px; }
+    .source-tab.active.all   { border-color:var(--yellow); background:rgba(234,179,8,0.08); }
+    .source-tab.active.live  { border-color:var(--blue); background:rgba(59,130,246,0.08); }
+    .source-tab.active.video { border-color:var(--purple); background:var(--purple-dim); }
+    .source-tab.active.other { border-color:var(--text-muted); background:var(--surface2); }
+    .source-tab.active .source-tab-label, .source-tab.active .source-tab-comm { color:var(--text); }
     .date-input { background:var(--surface2); border:1px solid var(--border); border-radius:7px; padding:5px 10px; font-size:12px; color:var(--text); outline:none; cursor:pointer; transition:border-color 0.15s; }
     .date-input:focus { border-color:var(--orange); }
     .date-input::-webkit-calendar-picker-indicator { filter:invert(0.5); cursor:pointer; }
@@ -307,12 +320,12 @@
       .main { padding:16px 16px 32px; }
       .header { padding:0 16px; }
       .tabs { padding:0 16px; }
-      .summary-bar, .summary-bar-6 { grid-template-columns:repeat(2,1fr); }
+      .summary-bar, .summary-bar-6, .summary-bar-7 { grid-template-columns:repeat(2,1fr); }
       .toolbar { flex-direction:column; align-items:stretch; }
       .search-wrap { max-width:100%; }
     }
     @media (max-width:600px) {
-      .summary-bar, .summary-bar-6 { grid-template-columns:1fr 1fr; }
+      .summary-bar, .summary-bar-6, .summary-bar-7 { grid-template-columns:1fr 1fr; }
       .cards-grid { grid-template-columns:1fr 1fr; }
     }
   </style>
@@ -903,6 +916,30 @@
       return rows;
     }, [data]);
 
+    // Danh sách đơn đã áp mọi filter TRỪ sourceFilter — dùng để đếm số đơn/tổng
+    // hoa hồng hiển thị ngay trên từng tab nguồn (Tất cả/Live/Video/Khác), để
+    // đổi tab không làm mất ngữ cảnh các filter khác đang chọn (owner, search...).
+    const preSourceFiltered = useMemo(() => {
+      let rows = allOrders;
+      if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
+      if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
+      if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
+      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === 4);
+      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== 4);
+      if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
+      return rows;
+    }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, statusFilter, searchQ]);
+
+    const tabStats = useMemo(() => {
+      const mk = (src) => {
+        const rows = src === "all" ? preSourceFiltered
+          : src === "other" ? preSourceFiltered.filter(o => o.source !== "video" && o.source !== "live")
+          : preSourceFiltered.filter(o => o.source === src);
+        return { count: rows.length, comm: rows.reduce((s,o)=> s + (o.status!==4 ? (o.commission||0) : 0), 0) };
+      };
+      return { all: mk("all"), live: mk("live"), video: mk("video"), other: mk("other") };
+    }, [preSourceFiltered]);
+
     const filtered = useMemo(() => {
       let rows = allOrders;
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
@@ -949,6 +986,7 @@
       return {
         totalComm:      data.reduce((a,acc)=>a+(acc.commission||0),0),
         totalCommVideo: data.reduce((a,acc)=>a+(acc.commissionVideo||0),0),
+        totalCommLive:  data.reduce((a,acc)=>a+(acc.commissionLive||0),0),
         filteredComm,
         totalOrders:   filtered.length,
         cancelled:     filtered.filter(o=>o.status===4).length,
@@ -1004,9 +1042,10 @@
       </div>}
 
       {/* SUMMARY */}
-      <div className="summary-bar summary-bar-6">
+      <div className="summary-bar summary-bar-7">
         <div className="summary-card"><div className="summary-card-label">Hoa hồng (tất cả TK)</div><div className="summary-card-value yellow">{fmtVND(summary.totalComm)}</div><div className="summary-card-sub">chưa trừ huỷ</div></div>
         <div className="summary-card"><div className="summary-card-label">Hoa hồng (hợp lệ)</div><div className="summary-card-value green">{fmtVND(summary.filteredComm)}</div><div className="summary-card-sub">trừ đơn huỷ</div></div>
+        <div className="summary-card"><div className="summary-card-label">🔴 Hoa hồng Live</div><div className="summary-card-value blue">{fmtVND(summary.totalCommLive)}</div><div className="summary-card-sub">trong tổng hoa hồng</div></div>
         <div className="summary-card"><div className="summary-card-label">🎬 Hoa hồng Video</div><div className="summary-card-value purple">{fmtVND(summary.totalCommVideo)}</div><div className="summary-card-sub">trong tổng hoa hồng</div></div>
         <div className="summary-card"><div className="summary-card-label">Tổng đơn</div><div className="summary-card-value">{fmtNum(summary.totalOrders)}</div><div className="summary-card-sub">{mode==="day"?"đơn trong ngày":"đơn trong khoảng"}</div></div>
         <div className="summary-card"><div className="summary-card-label">Đơn huỷ</div><div className="summary-card-value" style={{color:"var(--red)"}}>{fmtNum(summary.cancelled)}</div><div className="summary-card-sub">không tính hoa hồng</div></div>
@@ -1037,6 +1076,24 @@
 
         {/* TOOLBAR */}
         <div className="section-header"><div className="section-label">Chi tiết đơn hàng</div><div className="section-line"/></div>
+
+        <div className="source-tab-bar">
+          {[
+            ["all",   "Tất cả",    ""],
+            ["live",  "🔴 Live",   "live"],
+            ["video", "🎬 Video",  "video"],
+            ["other", "Khác",      "other"],
+          ].map(([v,l,cls])=>{
+            const st = tabStats[v];
+            return (
+              <button key={v} className={`source-tab ${cls} ${sourceFilter===v?"active "+cls:""}`} onClick={()=>setSourceFilter(v)}>
+                <div className="source-tab-label">{l}<span className="source-tab-count">{fmtNum(st.count)} đơn</span></div>
+                <div className="source-tab-comm">{fmtVND(st.comm)}</div>
+              </button>
+            );
+          })}
+        </div>
+
         <div className="toolbar">
           <div className="search-wrap">
             <span className="search-icon"><IcoSearch/></span>
@@ -1061,10 +1118,6 @@
             </div>
           </>}
           <div className="toolbar-divider"/>
-          <div className="filter-group">
-            <span className="filter-group-label">Nguồn:</span>
-            {[["all","Tất cả"],["video","🎬 Video"],["live","🔴 Live"],["other","Khác"]].map(([v,l])=><button key={v} className={`pill ${sourceFilter===v?"active":""}`} onClick={()=>setSourceFilter(v)}>{l}</button>)}
-          </div>
           <div className="toolbar-divider"/>
           <div className="filter-group">
             <span className="filter-group-label">Trạng thái:</span>
@@ -1082,68 +1135,76 @@
             <button className="sort-dir-btn" onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
           </div>
           {(searchQ||statusFilter!=="all"||ownerFilter!=="all"||ownerVideoFilter!=="all"||sourceFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");setOwnerFilter("all");setOwnerVideoFilter("all");setSourceFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
-          <ExportBtn disabled={filtered.length===0} onClick={()=>{
-            const rows = filtered.map(o => ({
-              "Tài khoản":         o._accountKey,
-              "Người phụ trách":   o._owner || "",
-              "PT Video":          o._ownerVideo || "",
-              "Nguồn":             o.source === "video" ? "Shopee Video" : o.source === "live" ? "Shopee Live" : "Khác",
-              "Mã đơn":            o.orderId || "",
-              "Sản phẩm":          o.productName || "",
-              "Trạng thái":        ORDER_STATUS[o.status] || o.status || "",
-              "Giá trị đơn":       o.itemValue || 0,
-              "Hoa hồng":          o.commission || 0,
-              "Thời gian mua":     fmtTime(o.purchaseTime),
-            }));
-            const fname = mode==="day" ? `hoa-hong_${date}.xlsx` : `hoa-hong_${rangeFrom}_${rangeTo}.xlsx`;
-            downloadWorkbook([["Đơn hoa hồng", rows]], fname);
-          }}/>
-          {mode==="range" && <ExportBtn label="Xuất tổng theo TK" disabled={data.length===0} onClick={()=>{
-            // Tổng hoa hồng CẢ KHOẢNG THỜI GIAN cho từng tài khoản — dùng số
-            // acc.commission chính xác từ backend (đã cộng thô, làm tròn 1 lần),
-            // không cộng lại từ các dòng đơn để tránh sai số làm tròn cộng dồn.
-            const list = (ownerFilter==="all" ? data : data.filter(a=>a.owner===ownerFilter));
-
-            // Sheet 1: Tổng hợp Livestream — mọi tài khoản, KHÔNG có cột PT Video/
-            // Trong đó Video để đỡ rối (đa số tài khoản không có hoa hồng video).
-            const liveRows = [...list]
-              .sort((a,b)=>(b.commission||0)-(a.commission||0))
-              .map(acc => ({
-                "Tài khoản":              acc.key,
-                "Người phụ trách":        acc.owner || "",
-                "Trạng thái":             acc.error ? `Lỗi: ${acc.error}` : "OK",
-                "Tổng đơn":               acc.totalOrders || 0,
-                "Tổng hoa hồng (hợp lệ)": acc.commission || 0,
+          <ExportBtn
+            label={`Xuất Excel${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`}
+            disabled={filtered.length===0}
+            onClick={()=>{
+              const rows = filtered.map(o => ({
+                "Tài khoản":         o._accountKey,
+                "Người phụ trách":   o._owner || "",
+                "PT Video":          o._ownerVideo || "",
+                "Nguồn":             o.source === "video" ? "Shopee Video" : o.source === "live" ? "Shopee Live" : "Khác",
+                "Mã đơn":            o.orderId || "",
+                "Sản phẩm":          o.productName || "",
+                "Trạng thái":        ORDER_STATUS[o.status] || o.status || "",
+                "Giá trị đơn":       o.itemValue || 0,
+                "Hoa hồng":          o.commission || 0,
+                "Thời gian mua":     fmtTime(o.purchaseTime),
               }));
-            const liveTotalRow = {
-              "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "", "Trạng thái": "",
-              "Tổng đơn": liveRows.reduce((s,r)=>s+(r["Tổng đơn"]||0),0),
-              "Tổng hoa hồng (hợp lệ)": liveRows.reduce((s,r)=>s+(r["Tổng hoa hồng (hợp lệ)"]||0),0),
-            };
+              const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
+              const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
+              downloadWorkbook([["Đơn hoa hồng", rows]], fname);
+            }}
+          />
+          {mode==="range" && <ExportBtn label={`Xuất tổng theo TK${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`} disabled={data.length===0} onClick={()=>{
+            // Tôn trọng ĐẦY ĐỦ bộ lọc đang chọn: tài khoản active, người phụ
+            // trách, PT Video, VÀ tab nguồn (Tất cả/Live/Video/Khác). Số hoa
+            // hồng lấy từ field chính xác tương ứng do backend tính sẵn
+            // (commission/commissionLive/commissionVideo/commissionOther —
+            // đã cộng thô rồi làm tròn 1 lần), không cộng lại từ từng dòng
+            // đơn để tránh sai số làm tròn cộng dồn.
+            let list = data;
+            if (activeAccount !== "all")   list = list.filter(a=>a.key===activeAccount);
+            if (ownerFilter !== "all")      list = list.filter(a=>a.owner===ownerFilter);
+            if (ownerVideoFilter !== "all") list = list.filter(a=>a.ownerVideo===ownerVideoFilter);
 
-            // Sheet 2: Tổng hợp Video — liệt kê TẤT CẢ tài khoản (kể cả không có
-            // hoa hồng video), kèm cột PT Video + Trong đó Video riêng.
-            const videoRows = [...list]
-              .sort((a,b)=>(b.commissionVideo||0)-(a.commissionVideo||0))
-              .map(acc => ({
-                "Tài khoản":       acc.key,
-                "PT Video":        acc.ownerVideo || "",
-                "Trạng thái":      acc.error ? `Lỗi: ${acc.error}` : "OK",
-                "Tổng đơn Video":  (acc.orders||[]).filter(o=>o.source==="video").length,
-                "Hoa hồng Video":  acc.commissionVideo || 0,
-              }));
-            const videoTotalRow = {
-              "Tài khoản": "TỔNG CỘNG", "PT Video": "", "Trạng thái": "",
-              "Tổng đơn Video": videoRows.reduce((s,r)=>s+(r["Tổng đơn Video"]||0),0),
-              "Hoa hồng Video": videoRows.reduce((s,r)=>s+(r["Hoa hồng Video"]||0),0),
-            };
+            const FIELD = { all:"commission", live:"commissionLive", video:"commissionVideo", other:"commissionOther" };
+            const LABEL = { all:"Tất cả",     live:"Live",           video:"Video",           other:"Khác" };
 
-            const sheets = [
-              ["Tổng hợp Livestream", [...liveRows, liveTotalRow]],
-              ["Tổng hợp Video",      [...videoRows, videoTotalRow]],
-            ];
+            function buildSheet(tab) {
+              const field = FIELD[tab];
+              const countFor = (acc) => tab==="all"
+                ? (acc.totalOrders || 0)
+                : (acc.orders||[]).filter(o => tab==="other" ? (o.source!=="video" && o.source!=="live") : o.source===tab).length;
+              const rows = [...list]
+                .sort((a,b)=>(b[field]||0)-(a[field]||0))
+                .map(acc => ({
+                  "Tài khoản":       acc.key,
+                  "Người phụ trách": acc.owner || "",
+                  "PT Video":        acc.ownerVideo || "",
+                  "Trạng thái":      acc.error ? `Lỗi: ${acc.error}` : "OK",
+                  "Tổng đơn":        countFor(acc),
+                  "Tổng hoa hồng":   acc[field] || 0,
+                }));
+              const totalRow = {
+                "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "", "PT Video": "", "Trạng thái": "",
+                "Tổng đơn":      rows.reduce((s,r)=>s+(r["Tổng đơn"]||0),0),
+                "Tổng hoa hồng": rows.reduce((s,r)=>s+(r["Tổng hoa hồng"]||0),0),
+              };
+              return [...rows, totalRow];
+            }
 
-            downloadWorkbook(sheets, `hoa-hong_tong-hop-tk_${rangeFrom}_${rangeTo}.xlsx`);
+            const sheets = sourceFilter === "all"
+              ? [
+                  ["Tổng hợp (tất cả)", buildSheet("all")],
+                  ["Tổng hợp Live",     buildSheet("live")],
+                  ["Tổng hợp Video",    buildSheet("video")],
+                  ["Tổng hợp Khác",     buildSheet("other")],
+                ]
+              : [[`Tổng hợp ${LABEL[sourceFilter]}`, buildSheet(sourceFilter)]];
+
+            const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
+            downloadWorkbook(sheets, `hoa-hong_tong-hop-tk${suffix}_${rangeFrom}_${rangeTo}.xlsx`);
           }}/>}
         </div>
 
