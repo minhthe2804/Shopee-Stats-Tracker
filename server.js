@@ -595,7 +595,7 @@ async function runDailySheetSync(dateOverride = null) {
  
     const rows = data.map(acc => ({
         key: acc.key,
-        value: acc.error ? acc.error : (acc.commission ?? 0),
+        value: acc.error ? acc.error : (acc.commissionLive ?? 0),
     }));
  
     const hhResult = await syncCommissionToSheet(display, rows);
