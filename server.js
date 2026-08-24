@@ -267,7 +267,8 @@ function calcCommission(orders, filterFn = null) {
     // cuối cùng — thay vì làm tròn từng đơn rồi mới cộng. Làm tròn riêng từng đơn
     // (mỗi đơn sai số tối đa ±0,5đ) rồi cộng hàng trăm đơn có thể để lại dư vài
     // đồng do sai số không triệt tiêu hết; cộng thô trước tránh được việc đó và
-    // khớp với cách Shopee tự tính tổng trên dashboard của họ.
+    // ĐÃ ĐƯỢC KIỂM CHỨNG khớp chính xác với cách Shopee tự tính tổng trên
+    // dashboard của họ (xem lịch sử debug 594.089đ).
     let sumRaw = 0;
     for (const o of orders) {
         if (o.conversion_status === 4) continue; // bỏ đơn huỷ
