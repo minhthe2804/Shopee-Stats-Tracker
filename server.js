@@ -88,7 +88,7 @@ const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ── Cấu hình concurrency / jitter / backoff ─────────────────────────────────
-const CONCURRENCY   = Number(process.env.SHOPEE_CONCURRENCY || 40);   // số request đồng thời tối đa
+const CONCURRENCY   = Number(process.env.SHOPEE_CONCURRENCY || 20);   // số request đồng thời tối đa
 const JITTER_MIN_MS = Number(process.env.JITTER_MIN_MS || 150);
 const JITTER_MAX_MS = Number(process.env.JITTER_MAX_MS || 450);
 const jitter = () => JITTER_MIN_MS + Math.random() * (JITTER_MAX_MS - JITTER_MIN_MS);
