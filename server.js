@@ -304,43 +304,47 @@ async function fetchAccountCommission(account, start, end) {
         }
 
         // Flatten: mỗi checkout (o) có thể chứa nhiều orders[], mỗi order có items[]
-        const flatOrders = [];
+        //
+        // QUAN TRỌNG: để tổng cộng của các dòng (dùng khi export Excel) khớp
+        // CHÍNH XÁC với calcCommission() (tổng thô, chỉ làm tròn 1 lần ở cuối,
+        // đã kiểm chứng đúng với dashboard Shopee), KHÔNG được làm tròn hoa hồng
+        // ở cấp checkout (Math.round) rồi mới chia cho từng đơn — vì Math.round
+        // từng checkout riêng lẻ rồi cộng hàng trăm checkout lại sẽ tích luỹ sai
+        // số ±0,5đ/checkout thành lệch vài đồng ở tổng cuối (bug cũ).
+        //
+        // Cách làm đúng: giữ giá trị THÔ (float) cho từng đơn, chỉ làm tròn
+        // MỘT LẦN DUY NHẤT trên toàn bộ danh sách bằng phương pháp "largest
+        // remainder" — đảm bảo SUM(flatOrders.commission) === Math.round(SUM(raw))
+        // === calcCommission(orders), tuyệt đối không lệch dù chỉ 1đ.
+        const rawRows = [];
         for (const o of orders) {
-            const commission = Number(o.linked_mcn_commission_rate) === 100000
-                ? Math.round(o.estimated_total_commission_with_mcn / 100000)
-                : Math.round(o.estimated_total_commission / 100000);
+            const isCancelled = o.conversion_status === 4; // đồng bộ với calcCommission: bỏ đơn huỷ khỏi tổng
+            const commissionRaw = isCancelled
+                ? 0
+                : (Number(o.linked_mcn_commission_rate) === 100000
+                    ? o.estimated_total_commission_with_mcn
+                    : o.estimated_total_commission) / 100000; // đồng, CHƯA làm tròn
             const source = classifySource(o);
 
             if (o.orders && o.orders.length > 0) {
-                // Hoa hồng `commission` ở trên là của CẢ checkout, không phải của
-                // từng đơn riêng lẻ. Nếu 1 checkout có nhiều đơn (o.orders.length > 1)
-                // mà gán nguyên `commission` cho MỖI đơn thì khi cộng tổng theo đơn sẽ
-                // bị NHÂN ĐÔI (nhân ba...) hoa hồng thật. Ở đây chia tỉ lệ theo giá trị
-                // đơn hàng (itemValue) cho từng đơn, đơn cuối nhận phần dư làm tròn để
-                // tổng của các đơn trong checkout luôn khớp CHÍNH XÁC với `commission`.
-                const itemValues = o.orders.map(
-                    (ord) => Math.round((ord.items?.reduce((a, i) => a + (i.actual_amount || 0), 0) || 0) / 100000)
+                // Chia tỉ lệ theo giá trị đơn hàng (itemValue) cho từng đơn con,
+                // dùng số THÔ (chưa làm tròn) — làm tròn sẽ xử lý ở bước sau,
+                // gộp chung với TẤT CẢ các dòng trong toàn bộ khoảng thời gian.
+                const itemValuesRaw = o.orders.map(
+                    (ord) => (ord.items?.reduce((a, i) => a + (i.actual_amount || 0), 0) || 0) / 100000
                 );
-                const totalItemValue = itemValues.reduce((a, v) => a + v, 0);
-                let allocated = 0;
+                const totalItemValue = itemValuesRaw.reduce((a, v) => a + v, 0);
                 o.orders.forEach((ord, idx) => {
-                    const isLast = idx === o.orders.length - 1;
-                    let share;
-                    if (isLast) {
-                        share = commission - allocated; // phần dư, đảm bảo tổng khớp
-                    } else if (totalItemValue > 0) {
-                        share = Math.round(commission * (itemValues[idx] / totalItemValue));
-                    } else {
-                        share = Math.round(commission / o.orders.length);
-                    }
-                    allocated += share;
+                    const shareRaw = totalItemValue > 0
+                        ? commissionRaw * (itemValuesRaw[idx] / totalItemValue)
+                        : commissionRaw / o.orders.length;
 
                     const firstItem = ord.items?.[0];
-                    flatOrders.push({
+                    rawRows.push({
                         orderId:      ord.order_sn,
                         status:       o.conversion_status,
-                        commission:   share,
-                        itemValue:    itemValues[idx],
+                        commissionRaw: shareRaw,
+                        itemValue:    Math.round(itemValuesRaw[idx]),
                         purchaseTime: o.purchase_time,
                         productName:  firstItem?.item_name || "",
                         mcnRate:      o.linked_mcn_commission_rate,
@@ -349,10 +353,10 @@ async function fetchAccountCommission(account, start, end) {
                 });
             } else {
                 // fallback nếu không có orders[]
-                flatOrders.push({
+                rawRows.push({
                     orderId:      o.checkout_id || "",
                     status:       o.conversion_status,
-                    commission,
+                    commissionRaw,
                     itemValue:    0,
                     purchaseTime: o.purchase_time,
                     productName:  "",
@@ -361,6 +365,55 @@ async function fetchAccountCommission(account, start, end) {
                 });
             }
         }
+
+        // Làm tròn "largest remainder" — QUAN TRỌNG: làm RIÊNG theo từng nhóm
+        // nguồn (video / live / other), KHÔNG gộp chung toàn bộ đơn của tài
+        // khoản lại rồi làm tròn 1 lần. Lý do: trên frontend, khi người dùng
+        // lọc theo 1 nguồn cụ thể (vd chỉ xem "Live"), tổng hiển thị được cộng
+        // từ CÁC DÒNG THUỘC NGUỒN ĐÓ — nếu làm tròn gộp chung tất cả nguồn,
+        // tổng phụ của riêng "Live" sẽ không còn đảm bảo khớp với commissionLive
+        // (vốn được tính độc lập bằng calcCommission(orders, isLiveOrder)).
+        // Làm tròn riêng từng nhóm đảm bảo:
+        //   sum(rows nguồn video) === commissionVideo
+        //   sum(rows nguồn live)  === commissionLive
+        //   sum(rows nguồn other) === commissionOther
+        // luôn khớp tuyệt đối, dù người dùng lọc theo bất kỳ nguồn nào.
+        function largestRemainderRound(rows) {
+            const floors = rows.map((r) => Math.floor(r.commissionRaw));
+            const totalRaw = rows.reduce((a, r) => a + r.commissionRaw, 0);
+            const targetTotal = Math.round(totalRaw);
+            const sumFloors = floors.reduce((a, v) => a + v, 0);
+            const remainder = Math.min(Math.max(targetTotal - sumFloors, 0), rows.length);
+            const byFrac = rows
+                .map((r, i) => ({ i, frac: r.commissionRaw - floors[i] }))
+                .sort((a, b) => b.frac - a.frac);
+            const shares = [...floors];
+            for (let k = 0; k < remainder; k++) shares[byFrac[k].i] += 1;
+            return shares;
+        }
+
+        const finalShares = new Array(rawRows.length);
+        for (const src of ["video", "live", "other"]) {
+            const idxs = [];
+            const groupRows = [];
+            rawRows.forEach((r, i) => {
+                if (r.source === src) { idxs.push(i); groupRows.push(r); }
+            });
+            if (groupRows.length === 0) continue;
+            const groupShares = largestRemainderRound(groupRows);
+            idxs.forEach((origIdx, k) => { finalShares[origIdx] = groupShares[k]; });
+        }
+
+        const flatOrders = rawRows.map((r, i) => ({
+            orderId:      r.orderId,
+            status:       r.status,
+            commission:   finalShares[i],
+            itemValue:    r.itemValue,
+            purchaseTime: r.purchaseTime,
+            productName:  r.productName,
+            mcnRate:      r.mcnRate,
+            source:       r.source,
+        }));
 
         return {
             key: account.key,
