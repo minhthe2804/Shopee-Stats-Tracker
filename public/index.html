@@ -1539,6 +1539,118 @@
     </>;
   }
 
+  /* ══════════════════════════════════════
+     TAB: GIỎ HÀNG LIVE (Live Cart Monitor)
+     Dữ liệu đẩy lên từ live_monitor.py/tray_app.py chạy trên các PC,
+     lưu ở MongoDB (route /api/live-cart) — tách biệt với dữ liệu
+     Firestore của các tab khác.
+  ══════════════════════════════════════ */
+  function LiveCartTab() {
+    const [state,    setState]    = useState("loading");
+    const [items,    setItems]    = useState([]);
+    const [errMsg,   setErrMsg]   = useState("");
+    const [fetchedAt,setFetchedAt]= useState(null);
+    const [searchQ,  setSearchQ]  = useState("");
+    const [ownerFilter, setOwnerFilter] = useState("all");
+    const [spinning, setSpinning] = useState(false);
+
+    const load = useCallback(async () => {
+      setSpinning(true);
+      try {
+        const res  = await fetch("/api/live-cart");
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setItems(json.data || []); setFetchedAt(json.fetchedAt); setState("ok");
+      } catch (e) { setErrMsg(e.message); setState("error"); }
+      finally { setSpinning(false); }
+    }, []);
+
+    // Tải lần đầu + tự làm mới mỗi 15s (dữ liệu giỏ hàng live thay đổi
+    // liên tục, khác các tab hoa hồng/báo cáo chỉ cần làm mới thủ công).
+    useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, [load]);
+
+    const owners = useMemo(() => [...new Set(items.map(d=>d.owner).filter(Boolean))].sort(), [items]);
+
+    const filtered = useMemo(() => {
+      let rows = items;
+      if (ownerFilter !== "all") rows = rows.filter(d => d.owner === ownerFilter);
+      if (searchQ.trim()) {
+        const q = searchQ.trim().toLowerCase();
+        rows = rows.filter(d =>
+          (d.shopeeAccount||"").toLowerCase().includes(q) ||
+          (d.serial||"").toLowerCase().includes(q) ||
+          (d.pcName||"").toLowerCase().includes(q)
+        );
+      }
+      return [...rows].sort((a,b) => (b.cartCount||0) - (a.cartCount||0));
+    }, [items, ownerFilter, searchQ]);
+
+    const summary = useMemo(() => ({
+      devices:   items.length,
+      withCart:  items.filter(d => (d.cartCount||0) > 0).length,
+      totalCart: items.reduce((a,d) => a + (d.cartCount||0), 0),
+    }), [items]);
+
+    if (state==="loading") return <div className="state-center"><div className="spinner"/><div style={{color:"var(--text-muted)",fontSize:13}}>Đang tải dữ liệu giỏ hàng live...</div></div>;
+    if (state==="error")   return <div className="state-center"><div style={{fontSize:36}}>⚠️</div><div style={{fontWeight:700}}>Không tải được dữ liệu giỏ hàng live</div><div style={{color:"var(--text-muted)",fontSize:12}}>{errMsg}</div><button className="refresh-btn" onClick={load} style={{marginTop:8}}><IcoRefresh/> Thử lại</button></div>;
+
+    return <>
+      <div className="summary-bar">
+        <div className="summary-card"><div className="summary-card-label">Thiết bị</div><div className="summary-card-value">{fmtNum(summary.devices)}</div><div className="summary-card-sub">đã đồng bộ gần nhất</div></div>
+        <div className="summary-card"><div className="summary-card-label">Đang có giỏ hàng</div><div className="summary-card-value orange">{fmtNum(summary.withCart)}</div><div className="summary-card-sub">thiết bị &gt; 0 sản phẩm</div></div>
+        <div className="summary-card"><div className="summary-card-label">Tổng sản phẩm</div><div className="summary-card-value green">{fmtNum(summary.totalCart)}</div><div className="summary-card-sub">cộng dồn mọi thiết bị</div></div>
+      </div>
+
+      <div className="section-header">
+        <div className="section-label">Danh sách thiết bị</div>
+        <div className="section-line"/>
+        {fetchedAt && <div className="header-time" style={{marginRight:8}}>Cập nhật {new Date(fetchedAt).toLocaleTimeString("vi-VN")}</div>}
+        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={load}><IcoRefresh/> Làm mới</button>
+      </div>
+
+      <div className="toolbar">
+        <div className="search-wrap">
+          <span className="search-icon"><IcoSearch/></span>
+          <input className="search-input" placeholder="Tìm tài khoản, serial, PC…" value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Người phụ trách:</span>
+          <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            {owners.map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="table-wrap"><table>
+        <thead><tr>
+          <th>Tài khoản</th>
+          <th>Người phụ trách</th>
+          <th>PC</th>
+          <th>Serial</th>
+          <th className="right">Số SP trong giỏ</th>
+          <th className="right">Cập nhật lúc</th>
+        </tr></thead>
+        <tbody>
+          {filtered.length===0
+            ? <tr className="empty-row"><td colSpan={6}><span className="empty-icon">🛒</span>Chưa có dữ liệu giỏ hàng live nào</td></tr>
+            : filtered.map(d => (
+              <tr key={d.deviceId}>
+                <td><span className="account-tag">{d.shopeeAccount || "(không khớp)"}</span></td>
+                <td>{d.owner || <span style={{color:"var(--text-muted)"}}>—</span>}</td>
+                <td>{d.pcName || "—"}</td>
+                <td style={{color:"var(--text-muted)",fontSize:12}}>{d.serial || "—"}</td>
+                <td className="num right" style={{fontWeight:700, color: d.cartCount>0 ? "var(--green)" : "var(--text-muted)"}}>{fmtNum(d.cartCount||0)}</td>
+                <td className="right" style={{color:"var(--text-muted)",fontSize:12}}>{d.updatedAt ? new Date(d.updatedAt).toLocaleTimeString("vi-VN") : "—"}</td>
+              </tr>
+            ))
+          }
+        </tbody>
+      </table></div>
+    </>;
+  }
+
   function App() {
     const [tab,       setTab]      = useState("live");
     const [state,     setState]    = useState("loading");
@@ -1593,12 +1705,16 @@
         <button className={`tab-btn ${tab==="reports"?"active":""}`} onClick={()=>setTab("reports")}>
           <span className="tab-icon">📊</span> Báo Cáo
         </button>
+        <button className={`tab-btn ${tab==="livecart"?"active":""}`} onClick={()=>setTab("livecart")}>
+          <span className="tab-icon">🛒</span> Giỏ Hàng Live
+        </button>
       </div>
 
       <div className="main">
         {tab==="live"       && <LiveTab data={data}/>}
         {tab==="commission" && <CommissionTab/>}
         {tab==="reports"    && <ReportsTab/>}
+        {tab==="livecart"   && <LiveCartTab/>}
       </div>
     </>;
   }

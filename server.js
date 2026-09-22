@@ -9,10 +9,23 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory } from "./sheetSync.js";
+import { LiveCart, connectLiveCartDb, isLiveCartDbConnected } from "./liveCartModel.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Cần để đọc JSON body cho POST /api/live-cart (live_monitor.py gửi JSON).
+// Các route POST khác hiện có (/api/sync-sheet) chỉ dùng req.query nên
+// không bị ảnh hưởng bởi middleware này.
+app.use(express.json());
+
+// LIVE_CART_TOKEN (tuỳ chọn) — nếu set, mọi request POST /api/live-cart phải
+// kèm header Authorization: Bearer <token> đúng giá trị này. Khớp với
+// TRACKER_TOKEN trong .env của live_monitor.py/tray_app.py trên các PC.
+const LIVE_CART_TOKEN = process.env.LIVE_CART_TOKEN || "";
+
+await connectLiveCartDb();
 
 // ── Người phụ trách (owner) theo từng tài khoản ──────────────────────────────
 // owners.json: { "accountKey": "TÊN NGƯỜI PHỤ TRÁCH", ... } — đặt cùng thư mục với server.js.
@@ -461,6 +474,71 @@ async function saveProductSnapshot(accountKey, sessionId, products, dateVN, sess
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "public")));
+
+// ── LIVE CART (giỏ hàng live) ────────────────────────────────────────────────
+// Nhận dữ liệu đẩy lên từ live_monitor.py/tray_app.py chạy trên các PC (mỗi
+// PC quét nhiều máy Android qua ADB), lưu vào MongoDB — mỗi thiết bị 1 bản ghi
+// trạng thái mới nhất (upsert theo deviceId = "<pc_name>-<serial>").
+
+// PC đẩy số liệu lên — body: { pc_name, device_id, serial, shopee_account, cart_count, captured_at }
+app.post("/api/live-cart", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    if (LIVE_CART_TOKEN) {
+        const auth = req.headers.authorization || "";
+        if (auth !== `Bearer ${LIVE_CART_TOKEN}`) {
+            return res.status(401).json({ success: false, error: "Token không hợp lệ" });
+        }
+    }
+    try {
+        const { pc_name, device_id, serial, shopee_account, cart_count, captured_at } = req.body || {};
+        if (!device_id || cart_count == null) {
+            return res.status(400).json({ success: false, error: "Thiếu device_id hoặc cart_count" });
+        }
+        await LiveCart.findOneAndUpdate(
+            { deviceId: device_id },
+            {
+                deviceId:      device_id,
+                pcName:        pc_name || "",
+                serial:        serial || "",
+                shopeeAccount: shopee_account || "",
+                owner:         getOwner(shopee_account) || null,
+                cartCount:     Number(cart_count),
+                capturedAt:    captured_at ? new Date(captured_at) : new Date(),
+            },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        res.json({ success: true });
+    } catch (err) {
+        console.error("❌ Lỗi lưu live-cart:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Dashboard đọc lại danh sách trạng thái hiện tại của mọi thiết bị
+app.get("/api/live-cart", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const docs = await LiveCart.find({}).sort({ cartCount: -1, updatedAt: -1 }).lean();
+        const data = docs.map((d) => ({
+            deviceId:      d.deviceId,
+            pcName:        d.pcName,
+            serial:        d.serial,
+            shopeeAccount: d.shopeeAccount,
+            owner:         d.owner,
+            cartCount:     d.cartCount,
+            capturedAt:    d.capturedAt,
+            updatedAt:     d.updatedAt,
+        }));
+        res.json({ success: true, data, fetchedAt: Date.now() });
+    } catch (err) {
+        console.error("❌ Lỗi đọc live-cart:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // Phiên live stats
 app.get("/api/stats", async (req, res) => {

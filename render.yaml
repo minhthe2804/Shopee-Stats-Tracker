@@ -17,3 +17,7 @@ services:
         sync: false
       - key: FIREBASE_APP_ID
         sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: LIVE_CART_TOKEN
+        sync: false
