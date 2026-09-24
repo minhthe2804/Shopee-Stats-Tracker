@@ -492,7 +492,7 @@ app.post("/api/live-cart", async (req, res) => {
         }
     }
     try {
-        const { pc_name, device_id, serial, shopee_account, cart_count, captured_at } = req.body || {};
+        const { pc_name, device_id, serial, shopee_account, owner: bodyOwner, cart_count, captured_at } = req.body || {};
         if (!device_id || cart_count == null) {
             return res.status(400).json({ success: false, error: "Thiếu device_id hoặc cart_count" });
         }
@@ -503,7 +503,8 @@ app.post("/api/live-cart", async (req, res) => {
                 pcName:        pc_name || "",
                 serial:        serial || "",
                 shopeeAccount: shopee_account || "",
-                owner:         getOwner(shopee_account) || null,
+                // Ưu tiên owner do PC gửi lên (đọc từ Google Sheet, luôn mới); không có thì tra owners.json tĩnh trên server.
+                owner:         (typeof bodyOwner === "string" && bodyOwner.trim()) || getOwner(shopee_account) || null,
                 cartCount:     Number(cart_count),
                 capturedAt:    captured_at ? new Date(captured_at) : new Date(),
             },
