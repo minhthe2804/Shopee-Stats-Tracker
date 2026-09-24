@@ -1552,6 +1552,9 @@
     const [fetchedAt,setFetchedAt]= useState(null);
     const [searchQ,  setSearchQ]  = useState("");
     const [ownerFilter, setOwnerFilter] = useState("all");
+    const [pcFilter, setPcFilter] = useState("all");
+    const [cartStatusFilter, setCartStatusFilter] = useState("all");
+    const [sortField, setSortField] = useState("cartCount");
     const [spinning, setSpinning] = useState(false);
 
     const load = useCallback(async () => {
@@ -1570,10 +1573,19 @@
     useEffect(() => { load(); const id = setInterval(load, 15000); return () => clearInterval(id); }, [load]);
 
     const owners = useMemo(() => [...new Set(items.map(d=>d.owner).filter(Boolean))].sort(), [items]);
+    const pcCounts = useMemo(() => {
+      const m = {};
+      items.forEach(d => { if (d.pcName) m[d.pcName] = (m[d.pcName]||0) + 1; });
+      return m;
+    }, [items]);
+    const pcs = useMemo(() => Object.keys(pcCounts).sort(), [pcCounts]);
 
     const filtered = useMemo(() => {
       let rows = items;
       if (ownerFilter !== "all") rows = rows.filter(d => d.owner === ownerFilter);
+      if (pcFilter !== "all") rows = rows.filter(d => d.pcName === pcFilter);
+      if (cartStatusFilter === "has") rows = rows.filter(d => (d.cartCount||0) > 0);
+      if (cartStatusFilter === "empty") rows = rows.filter(d => !(d.cartCount||0));
       if (searchQ.trim()) {
         const q = searchQ.trim().toLowerCase();
         rows = rows.filter(d =>
@@ -1582,23 +1594,30 @@
           (d.pcName||"").toLowerCase().includes(q)
         );
       }
-      return [...rows].sort((a,b) => (b.cartCount||0) - (a.cartCount||0));
-    }, [items, ownerFilter, searchQ]);
+      rows = [...rows];
+      if (sortField === "cartCount") rows.sort((a,b) => (b.cartCount||0) - (a.cartCount||0));
+      else if (sortField === "account") rows.sort((a,b) => (a.shopeeAccount||"").localeCompare(b.shopeeAccount||""));
+      else if (sortField === "pc") rows.sort((a,b) => (a.pcName||"").localeCompare(b.pcName||""));
+      else if (sortField === "updatedAt") rows.sort((a,b) => new Date(b.updatedAt||0) - new Date(a.updatedAt||0));
+      return rows;
+    }, [items, ownerFilter, pcFilter, cartStatusFilter, sortField, searchQ]);
+
+    const hasFilter = ownerFilter!=="all" || pcFilter!=="all" || cartStatusFilter!=="all" || !!searchQ.trim();
 
     const summary = useMemo(() => ({
-      devices:   items.length,
-      withCart:  items.filter(d => (d.cartCount||0) > 0).length,
-      totalCart: items.reduce((a,d) => a + (d.cartCount||0), 0),
-    }), [items]);
+      devices:   filtered.length,
+      withCart:  filtered.filter(d => (d.cartCount||0) > 0).length,
+      totalCart: filtered.reduce((a,d) => a + (d.cartCount||0), 0),
+    }), [filtered]);
 
     if (state==="loading") return <div className="state-center"><div className="spinner"/><div style={{color:"var(--text-muted)",fontSize:13}}>Đang tải dữ liệu giỏ hàng live...</div></div>;
     if (state==="error")   return <div className="state-center"><div style={{fontSize:36}}>⚠️</div><div style={{fontWeight:700}}>Không tải được dữ liệu giỏ hàng live</div><div style={{color:"var(--text-muted)",fontSize:12}}>{errMsg}</div><button className="refresh-btn" onClick={load} style={{marginTop:8}}><IcoRefresh/> Thử lại</button></div>;
 
     return <>
       <div className="summary-bar">
-        <div className="summary-card"><div className="summary-card-label">Thiết bị</div><div className="summary-card-value">{fmtNum(summary.devices)}</div><div className="summary-card-sub">đã đồng bộ gần nhất</div></div>
+        <div className="summary-card"><div className="summary-card-label">Thiết bị</div><div className="summary-card-value">{fmtNum(summary.devices)}</div><div className="summary-card-sub">{hasFilter?`theo bộ lọc (tổng ${items.length})`:"đã đồng bộ gần nhất"}</div></div>
         <div className="summary-card"><div className="summary-card-label">Đang có giỏ hàng</div><div className="summary-card-value orange">{fmtNum(summary.withCart)}</div><div className="summary-card-sub">thiết bị &gt; 0 sản phẩm</div></div>
-        <div className="summary-card"><div className="summary-card-label">Tổng sản phẩm</div><div className="summary-card-value green">{fmtNum(summary.totalCart)}</div><div className="summary-card-sub">cộng dồn mọi thiết bị</div></div>
+        <div className="summary-card"><div className="summary-card-label">Tổng sản phẩm</div><div className="summary-card-value green">{fmtNum(summary.totalCart)}</div><div className="summary-card-sub">{hasFilter?"cộng dồn theo bộ lọc":"cộng dồn mọi thiết bị"}</div></div>
       </div>
 
       <div className="section-header">
@@ -1619,6 +1638,30 @@
           <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
             <option value="all">Tất cả</option>
             {owners.map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">PC:</span>
+          <select className="sort-select" value={pcFilter} onChange={e=>setPcFilter(e.target.value)}>
+            <option value="all">Tất cả ({items.length})</option>
+            {pcs.map(p=><option key={p} value={p}>{p} ({pcCounts[p]})</option>)}
+          </select>
+          {pcFilter!=="all" && <span style={{fontSize:11,color:"var(--orange)",fontWeight:600,marginLeft:6}}>{pcCounts[pcFilter]||0} thiết bị</span>}
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Giỏ hàng:</span>
+          {[["all","Tất cả"],["has","Có giỏ hàng"],["empty","Giỏ trống"]].map(([v,l])=><button key={v} className={`pill ${cartStatusFilter===v?"active":""}`} onClick={()=>setCartStatusFilter(v)}>{l}</button>)}
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Sắp xếp:</span>
+          <select className="sort-select" value={sortField} onChange={e=>setSortField(e.target.value)}>
+            <option value="cartCount">Số SP giỏ hàng</option>
+            <option value="account">Tài khoản A-Z</option>
+            <option value="pc">PC A-Z</option>
+            <option value="updatedAt">Cập nhật gần nhất</option>
           </select>
         </div>
       </div>
