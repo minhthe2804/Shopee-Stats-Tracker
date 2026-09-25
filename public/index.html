@@ -106,6 +106,18 @@
     .summary-card-value.orange { color:var(--orange); }
     .summary-card-value.green  { color:var(--green); }
     .summary-card-value.blue   { color:var(--blue); }
+    .owner-table-wrap { overflow-x:auto; margin-bottom:20px; background:var(--surface); border:1px solid var(--border); border-radius:12px; }
+    .owner-table { width:100%; border-collapse:collapse; font-size:13px; }
+    .owner-table th { text-align:center; font-size:10px; font-weight:600; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-muted); padding:10px 12px; border-bottom:1px solid var(--border); }
+    .owner-table th:first-child, .owner-table td.owner-name { text-align:left; }
+    .owner-table td { text-align:center; padding:6px 12px; border-bottom:1px solid var(--border); }
+    .owner-table tr:last-child td { border-bottom:none; }
+    .owner-table td.owner-name { font-weight:600; color:var(--text); }
+    .owner-table tr.sel { background:var(--orange-dim); }
+    .owner-table tr.total-row { background:var(--surface2); }
+    .ot-cell { background:none; border:1px solid transparent; border-radius:6px; min-width:44px; padding:3px 10px; font-size:13px; font-weight:600; color:var(--text-dim); cursor:pointer; font-family:inherit; }
+    .ot-cell:hover { border-color:var(--orange); color:var(--orange); }
+    .ot-cell.green { color:var(--green); } .ot-cell.orange { color:var(--orange); } .ot-cell.red { color:var(--red); }
     .summary-card-value.yellow { color:var(--yellow); }
     .summary-card-value.purple { color:var(--purple); }
     .summary-card-sub { font-size:11px; color:var(--text-muted); margin-top:3px; }
@@ -458,10 +470,10 @@
   }
 
   /* ── SESSION ROW ── */
-  function SessionRow({ session, accountKey, onOpenProducts }) {
+  function SessionRow({ session, accountKey, owner, cart, onOpenProducts }) {
     const isLive = session.status === 1;
     return <tr>
-      <td><span className="account-tag">{accountKey}</span></td>
+      <td><span className="account-tag">{accountKey}</span>{(owner||cart)&&<div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{owner||"Chưa gán"}{cart?` · 🛒 ${cart}`:""}</div>}</td>
       <td style={{maxWidth:220}}><div className="session-title">{session.title || "Phiên live"}</div><div className="session-time">{fmtTime(session.startTime)}</div></td>
       <td>{isLive ? <span className="badge-live"><span className="dot-pulse"/>LIVE</span> : <span className="badge-done">Đã kết thúc</span>}</td>
       <td className="num right">{fmtNum(session.views)}</td>
@@ -631,58 +643,158 @@
      TAB: PHIÊN LIVE
   ══════════════════════════════════════ */
   function LiveTab({ data }) {
+    // ── BỘ LỌC ─────────────────────────────────────────────────────────────
+    // statusFilter là MỘT bộ lọc duy nhất, loại trừ nhau nên không còn xung đột:
+    //   all | live | done  → xem theo PHIÊN LIVE
+    //   live0              → phiên đang live của tài khoản chưa ra doanh thu
+    //   notlive | error    → xem theo TÀI KHOẢN (không có phiên để hiển thị)
     const [activeAccount, setActiveAccount] = useState("all");
-    const [ownerFilter,   setOwnerFilter]   = useState("all");
-    const [searchQ,       setSearchQ]       = useState("");
+    const [ownerFilter,   setOwnerFilter]   = useState("all"); // "all" | tên | "__none__"
+    const [cartFilter,    setCartFilter]    = useState("all"); // "all" | giá trị giỏ | "__none__"
     const [statusFilter,  setStatusFilter]  = useState("all");
+    const [searchQ,       setSearchQ]       = useState("");
     const [dateFrom,      setDateFrom]      = useState("");
     const [dateTo,        setDateTo]        = useState("");
     const [sortField,     setSortField]     = useState("startTime");
     const [sortDir,       setSortDir]       = useState("desc");
     const [page,          setPage]          = useState(1);
-    const [showAccounts,  setShowAccounts]  = useState(true);
+    const [showAccounts,  setShowAccounts]  = useState(false);
     const [productModal,  setProductModal]  = useState(null); // { accountKey, sessionId, sessionTitle }
 
     const openProducts = useCallback((accountKey, sessionId, sessionTitle) => {
       setProductModal({ accountKey, sessionId, sessionTitle });
     }, []);
 
-    const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
-    const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
-    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setPage(1); };
-    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all";
+    const STATUS_LABEL = { all:"Tất cả", live:"Đang LIVE", done:"Đã kết thúc", notlive:"Không LIVE", live0:"LIVE 0đ", error:"Lỗi cookie" };
+    const accountMode = statusFilter === "notlive" || statusFilter === "error";
 
-    const allSessions = useMemo(() => {
-      const rows = [];
-      for (const acc of data) {
-        if (acc.error || !acc.sessions?.length) continue;
-        for (const s of acc.sessions) rows.push({...s, _accountKey: acc.key, _owner: acc.owner});
+    // ── HÀM DÙNG CHUNG ─────────────────────────────────────────────────────
+    const isAccLive = a => !a.error && (a.sessions||[]).some(s => s.status === 1);
+    const isLive0   = a => isAccLive(a) && (a.sessions||[]).filter(s => s.status === 1).every(s => !(s.confirmedSales > 0));
+    const matchOwner = o => ownerFilter === "all" || (ownerFilter === "__none__" ? !o : o === ownerFilter);
+    const matchCart  = c => cartFilter  === "all" || (cartFilter  === "__none__" ? !c : String(c) === cartFilter);
+    const matchState = a => {
+      switch (statusFilter) {
+        case "live":    return isAccLive(a);
+        case "notlive": return !a.error && !isAccLive(a);
+        case "live0":   return isLive0(a);
+        case "error":   return !!a.error;
+        case "done":    return !a.error;
+        default:        return true;
       }
-      return rows;
-    }, [data]);
+    };
+    const fromTs = dateFrom ? new Date(dateFrom).setHours(0,0,0,0)        : null;
+    const toTs   = dateTo   ? new Date(dateTo).setHours(23,59,59,999)     : null;
+    const sessionPass = s => {
+      if (statusFilter === "live" || statusFilter === "live0") { if (s.status !== 1) return false; }
+      else if (statusFilter === "done" && s.status === 1) return false;
+      const ts = s.startTime < 1e12 ? s.startTime*1000 : s.startTime;
+      if (fromTs && ts < fromTs) return false;
+      if (toTs   && ts > toTs)   return false;
+      return true;
+    };
+    const q = searchQ.trim().toLowerCase();
 
-    const filtered = useMemo(() => {
-      let rows = allSessions;
-      if (activeAccount !== "all") rows = rows.filter(s => s._accountKey === activeAccount);
-      if (ownerFilter !== "all") rows = rows.filter(s => s._owner === ownerFilter);
-      if (statusFilter === "live") rows = rows.filter(s => s.status === 1);
-      if (statusFilter === "done") rows = rows.filter(s => s.status !== 1);
-      if (searchQ.trim()) { const q = searchQ.trim().toLowerCase(); rows = rows.filter(s => (s.title||"").toLowerCase().includes(q) || s._accountKey.toLowerCase().includes(q)); }
-      if (dateFrom) { const from = new Date(dateFrom).setHours(0,0,0,0); rows = rows.filter(s => (s.startTime < 1e12 ? s.startTime*1000 : s.startTime) >= from); }
-      if (dateTo)   { const to   = new Date(dateTo).setHours(23,59,59,999); rows = rows.filter(s => (s.startTime < 1e12 ? s.startTime*1000 : s.startTime) <= to); }
-      return [...rows].sort((a,b) => { const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
-    }, [allSessions, activeAccount, ownerFilter, statusFilter, searchQ, dateFrom, dateTo, sortField, sortDir]);
+    // ── DỮ LIỆU THEO TẦNG: người phụ trách → giỏ → trạng thái ──────────────
+    const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
+    const cartValues = useMemo(() => [...new Set(data.map(a=>a.cart).filter(Boolean))].sort((x,y)=>(parseFloat(x)||0)-(parseFloat(y)||0) || String(x).localeCompare(String(y))), [data]);
+    const ownerScoped = useMemo(() => data.filter(a => matchOwner(a.owner)), [data, ownerFilter]);
+    const scoped      = useMemo(() => ownerScoped.filter(a => matchCart(a.cart)), [ownerScoped, cartFilter]);
 
-    useEffect(() => setPage(1), [activeAccount, ownerFilter, statusFilter, searchQ, dateFrom, dateTo]);
+    // Số đếm trên các nút: giỏ đếm theo người phụ trách; trạng thái đếm theo người phụ trách + giỏ
+    const cartCounts = useMemo(() => { const m = {}; for (const a of ownerScoped) { const k = a.cart ? String(a.cart) : "__none__"; m[k] = (m[k]||0)+1; } return m; }, [ownerScoped]);
+    const liveCount    = useMemo(() => scoped.filter(isAccLive).length, [scoped]);
+    const notLiveCount = useMemo(() => scoped.filter(a => !a.error && !isAccLive(a)).length, [scoped]);
+    const live0Count   = useMemo(() => scoped.filter(isLive0).length, [scoped]);
+    const errorCount   = useMemo(() => scoped.filter(a => a.error).length, [scoped]);
 
-    const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+    // Bảng tổng hợp theo người phụ trách (không phụ thuộc bộ lọc)
+    const ownerStats = useMemo(() => {
+      const calc = list => ({
+        total:   list.length,
+        live:    list.filter(isAccLive).length,
+        notlive: list.filter(a => !a.error && !isAccLive(a)).length,
+        live0:   list.filter(isLive0).length,
+        error:   list.filter(a => a.error).length,
+        carts:   list.reduce((m,a)=>{ if (a.cart) m[a.cart]=(m[a.cart]||0)+1; return m; }, {}),
+      });
+      return [...owners.map(o => ({ owner: o, label: o, ...calc(data.filter(a => a.owner === o)) })),
+        { owner: "__none__", label: "(Chưa gán)", ...calc(data.filter(a => !a.owner)) }];
+    }, [data, owners]);
+    const ownerTotal = useMemo(() => ownerStats.reduce((t,r) => ({
+      total:t.total+r.total, live:t.live+r.live, notlive:t.notlive+r.notlive, live0:t.live0+r.live0, error:t.error+r.error,
+      carts: Object.fromEntries(cartValues.map(c => [c, (t.carts[c]||0) + (r.carts[c]||0)]))
+    }), {total:0,live:0,notlive:0,live0:0,error:0,carts:{}}), [ownerStats, cartValues]);
+
+    // Bấm 1 ô trong bảng tổng hợp → đặt lại toàn bộ bộ lọc rồi áp đúng 1 điều kiện
+    const pickOwnerCell = (owner, kind) => {
+      setOwnerFilter(owner); setActiveAccount("all"); setSearchQ(""); setDateFrom(""); setDateTo(""); setPage(1);
+      if (kind.startsWith("cart:")) { setCartFilter(kind.slice(5)); setStatusFilter("all"); }
+      else { setCartFilter("all"); setStatusFilter(kind === "total" ? "all" : kind); }
+      setShowAccounts(true);
+    };
+
+    // Thẻ tài khoản (phần "Tài khoản")
+    const visibleAccounts = useMemo(() => {
+      let list = scoped.filter(matchState);
+      if (q) list = list.filter(a => a.key.toLowerCase().includes(q) || (a.sessions||[]).some(s => (s.title||"").toLowerCase().includes(q)));
+      if (!accountMode && (statusFilter !== "all" || fromTs || toTs)) list = list.filter(a => !a.error && (a.sessions||[]).some(sessionPass));
+      return list;
+    }, [scoped, statusFilter, q, dateFrom, dateTo]);
+
+    // ── BẢNG DƯỚI: 1 trong 2 chế độ ────────────────────────────────────────
+    // (a) chế độ PHIÊN: mỗi dòng là 1 phiên live
+    const sessionRows = useMemo(() => {
+      if (accountMode) return [];
+      const rows = [];
+      for (const acc of scoped) {
+        if (acc.error || !acc.sessions?.length) continue;
+        if (activeAccount !== "all" && acc.key !== activeAccount) continue;
+        if (statusFilter === "live0" && !isLive0(acc)) continue;
+        const accHit = q && acc.key.toLowerCase().includes(q);
+        for (const s of acc.sessions) {
+          if (!sessionPass(s)) continue;
+          if (q && !accHit && !(s.title||"").toLowerCase().includes(q)) continue;
+          rows.push({ ...s, _accountKey: acc.key, _owner: acc.owner, _cart: acc.cart });
+        }
+      }
+      return rows.sort((a,b) => { const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
+    }, [scoped, activeAccount, statusFilter, q, dateFrom, dateTo, sortField, sortDir]);
+
+    // (b) chế độ TÀI KHOẢN (Không LIVE / Lỗi cookie): mỗi dòng là 1 tài khoản
+    const accountRows = useMemo(() => {
+      if (!accountMode) return [];
+      return scoped
+        .filter(a => matchState(a) && (activeAccount === "all" || a.key === activeAccount) && (!q || a.key.toLowerCase().includes(q)))
+        .map(a => {
+          const ss = a.sessions || [];
+          const last = ss.reduce((m, s) => Math.max(m, s.startTime < 1e12 ? s.startTime*1000 : s.startTime), 0);
+          return { key:a.key, owner:a.owner||"", cart:a.cart||"", total:ss.length, last, error:a.error,
+                   note: a.error ? a.error : (ss.length ? "Không có phiên đang LIVE" : "Chưa có phiên live nào") };
+        })
+        .sort((x,y) => x.owner.localeCompare(y.owner) || x.key.localeCompare(y.key));
+    }, [scoped, statusFilter, activeAccount, q]);
+
+    const rowsAll = accountMode ? accountRows : sessionRows;
+    const filtered = sessionRows; // giữ tên cũ cho phần còn lại
+
+    const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
+    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setCartFilter("all"); setActiveAccount("all"); setPage(1); };
+    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all" || cartFilter !== "all" || activeAccount !== "all";
+
+    // Đổi bất kỳ bộ lọc nào → về trang 1
+    useEffect(() => setPage(1), [activeAccount, ownerFilter, cartFilter, statusFilter, searchQ, dateFrom, dateTo]);
+
+    const totalPages  = Math.max(1, Math.ceil(rowsAll.length / PAGE_SIZE));
     const currentPage = Math.min(page, totalPages);
-    const pageRows    = filtered.slice((currentPage-1)*PAGE_SIZE, currentPage*PAGE_SIZE);
-    const summary = useMemo(() => ({
-      sessions: filtered.length, views: sumField(filtered,"views"),
-      orders: sumField(filtered,"confirmedOrders"), sales: sumField(filtered,"confirmedSales"),
-      live: filtered.filter(s=>s.status===1).length,
-    }), [filtered]);
+    const pageRows    = rowsAll.slice((currentPage-1)*PAGE_SIZE, currentPage*PAGE_SIZE);
+
+    // Thẻ tổng quan phía trên: phiên của bộ lọc hiện tại (chế độ tài khoản: tất cả phiên của các tài khoản đang liệt kê)
+    const summary = useMemo(() => {
+      const list = accountMode ? scoped.filter(matchState).flatMap(a => a.sessions || []) : sessionRows;
+      return { sessions: list.length, views: sumField(list,"views"), orders: sumField(list,"confirmedOrders"),
+               sales: sumField(list,"confirmedSales"), live: list.filter(s=>s.status===1).length };
+    }, [accountMode, scoped, statusFilter, sessionRows]);
 
     const pageButtons = useMemo(() => {
       if (totalPages <= 7) return Array.from({length:totalPages},(_,i)=>i+1);
@@ -701,13 +813,45 @@
         <div className="summary-card"><div className="summary-card-label">Tài khoản</div><div className="summary-card-value">{data.filter(a=>!a.error).length}</div><div className="summary-card-sub">{data.filter(a=>a.error).length} lỗi cookie</div></div>
       </div>
 
+      {/* TỔNG HỢP THEO NGƯỜI PHỤ TRÁCH */}
+      <div className="section-header"><div className="section-label">Tổng hợp theo người phụ trách</div><div className="section-line"/></div>
+      <div className="owner-table-wrap">
+        <table className="owner-table">
+          <thead><tr><th>Phụ trách</th><th>Tổng TK</th><th>Đang LIVE</th><th>Không LIVE</th><th>LIVE 0đ</th><th>Lỗi cookie</th>{cartValues.map(c=><th key={c}>Giỏ {c}</th>)}</tr></thead>
+          <tbody>
+            {ownerStats.map(r => <tr key={r.owner} className={ownerFilter===r.owner?"sel":""}>
+              <td className="owner-name">{r.label}</td>
+              <td><button className="ot-cell" onClick={()=>pickOwnerCell(r.owner,"total")}>{r.total}</button></td>
+              <td><button className="ot-cell green" onClick={()=>pickOwnerCell(r.owner,"live")}>{r.live}</button></td>
+              <td><button className="ot-cell" onClick={()=>pickOwnerCell(r.owner,"notlive")}>{r.notlive}</button></td>
+              <td><button className="ot-cell orange" onClick={()=>pickOwnerCell(r.owner,"live0")}>{r.live0}</button></td>
+              <td><button className="ot-cell red" onClick={()=>pickOwnerCell(r.owner,"error")}>{r.error}</button></td>
+              {cartValues.map(c=><td key={c}><button className="ot-cell" onClick={()=>pickOwnerCell(r.owner,"cart:"+c)}>{r.carts[c]||0}</button></td>)}
+            </tr>)}
+            <tr className="total-row">
+              <td className="owner-name">Tổng</td>
+              <td><button className="ot-cell" onClick={()=>pickOwnerCell("all","total")}>{ownerTotal.total}</button></td>
+              <td><button className="ot-cell green" onClick={()=>pickOwnerCell("all","live")}>{ownerTotal.live}</button></td>
+              <td><button className="ot-cell" onClick={()=>pickOwnerCell("all","notlive")}>{ownerTotal.notlive}</button></td>
+              <td><button className="ot-cell orange" onClick={()=>pickOwnerCell("all","live0")}>{ownerTotal.live0}</button></td>
+              <td><button className="ot-cell red" onClick={()=>pickOwnerCell("all","error")}>{ownerTotal.error}</button></td>
+              {cartValues.map(c=><td key={c}><button className="ot-cell" onClick={()=>pickOwnerCell("all","cart:"+c)}>{ownerTotal.carts[c]||0}</button></td>)}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       {/* ACCOUNTS */}
       <div className="section-header">
         <button className="section-toggle" onClick={()=>setShowAccounts(v=>!v)}>
           <span className={`section-chevron ${showAccounts?"open":""}`}><IcoChevron/></span>
           <span className="section-label">Tài khoản</span>
-          <span className="section-count">{data.length}</span>
+          <span className="section-count">{visibleAccounts.length}</span>
         </button>
+        {statusFilter !== "all" && <span style={{fontSize:11,color:"var(--orange)",fontWeight:600}}>
+          · {STATUS_LABEL[statusFilter]}
+          <button onClick={()=>setStatusFilter("all")} style={{marginLeft:6,background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}}>✕</button>
+        </span>}
         {activeAccount !== "all" && <span style={{fontSize:11,color:"var(--orange)",fontWeight:600}}>
           · Đang lọc: {activeAccount}
           <button onClick={()=>setActiveAccount("all")} style={{marginLeft:6,background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}}>✕</button>
@@ -716,7 +860,9 @@
       </div>
       <div className={`collapse-wrap ${showAccounts?"":"collapsed"}`}><div className="collapse-inner">
         <div className="cards-grid">
-          {data.map(acc => <AccountCard key={acc.key} account={acc} active={activeAccount===acc.key} onClick={()=>setActiveAccount(activeAccount===acc.key?"all":acc.key)}/>)}
+          {visibleAccounts.length===0
+            ? <div style={{color:"var(--text-muted)",fontSize:13,padding:"12px 4px"}}>Không có tài khoản nào khớp bộ lọc</div>
+            : visibleAccounts.map(acc => <AccountCard key={acc.key} account={acc} active={activeAccount===acc.key} onClick={()=>setActiveAccount(activeAccount===acc.key?"all":acc.key)}/>)}
         </div>
       </div></div>
 
@@ -733,24 +879,33 @@
           <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
             <option value="all">Tất cả</option>
             {owners.map(o=><option key={o} value={o}>{o}</option>)}
+            <option value="__none__">(Chưa gán)</option>
           </select>
         </div>
         <div className="toolbar-divider"/>
         <div className="filter-group">
           <span className="filter-group-label">Trạng thái:</span>
-          {[["all","Tất cả"],["live","🔴 Đang LIVE"],["done","Đã kết thúc"]].map(([v,l])=><button key={v} className={`pill ${statusFilter===v?"active":""}`} onClick={()=>setStatusFilter(v)}>{l}</button>)}
+          {[["all","Tất cả"],["live",`🔴 Đang LIVE (${liveCount})`],["done","Đã kết thúc"],["notlive",`⚪ Không LIVE (${notLiveCount})`],["live0",`🟠 LIVE 0đ (${live0Count})`],["error",`⚠ Lỗi cookie (${errorCount})`]]
+            .map(([v,l])=><button key={v} className={`pill ${statusFilter===v?"active":""}`} onClick={()=>setStatusFilter(statusFilter===v?"all":v)}>{l}</button>)}
         </div>
+        {cartValues.length > 0 && <>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Giỏ:</span>
+          {[["all","Tất cả"],...cartValues.map(c=>[String(c),`🛒 ${c} (${cartCounts[c]||0})`]),...(cartCounts["__none__"]?[["__none__",`Chưa có (${cartCounts["__none__"]})`]]:[])].map(([v,l])=><button key={v} className={`pill ${cartFilter===v?"active":""}`} onClick={()=>setCartFilter(cartFilter===v?"all":v)}>{l}</button>)}
+        </div>
+        </>}
         <div className="toolbar-divider"/>
         <div className="filter-group">
           <span className="filter-group-label">Từ:</span>
-          <input type="date" className="date-input" value={dateFrom} onChange={e=>setDateFrom(e.target.value)}/>
+          <input type="date" className="date-input" value={dateFrom} disabled={accountMode} onChange={e=>setDateFrom(e.target.value)}/>
           <span className="filter-group-label">đến:</span>
-          <input type="date" className="date-input" value={dateTo} onChange={e=>setDateTo(e.target.value)}/>
+          <input type="date" className="date-input" value={dateTo} disabled={accountMode} onChange={e=>setDateTo(e.target.value)}/>
         </div>
         <div className="toolbar-divider"/>
         <div className="filter-group">
           <span className="filter-group-label">Sắp xếp:</span>
-          <select className="sort-select" value={sortField} onChange={e=>{setSortField(e.target.value);setPage(1);}}>
+          <select className="sort-select" value={sortField} disabled={accountMode} onChange={e=>{setSortField(e.target.value);setPage(1);}}>
             <option value="startTime">Thời gian</option>
             <option value="views">Lượt xem</option>
             <option value="viewers">Người xem</option>
@@ -760,13 +915,20 @@
             <option value="duration">Thời lượng</option>
             <option value="atc">Thêm giỏ</option>
           </select>
-          <button className="sort-dir-btn" onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
+          <button className="sort-dir-btn" disabled={accountMode} onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
         </div>
         {hasFilters && <button className="reset-btn" onClick={resetFilters}><IcoX/> Xoá bộ lọc</button>}
-        <ExportBtn disabled={filtered.length===0} onClick={()=>{
-          const rows = filtered.map(s => ({
+        <ExportBtn disabled={rowsAll.length===0} onClick={()=>{
+          if (accountMode) {
+            downloadWorkbook([[STATUS_LABEL[statusFilter], accountRows.map((r,i)=>({
+              "STT":i+1, "Tài khoản":r.key, "Người phụ trách":r.owner, "Giỏ":r.cart, "Tổng phiên":r.total,
+              "Phiên gần nhất": r.last ? fmtTime(r.last) : "", "Ghi chú":r.note }))]], `tai-khoan-${statusFilter}_${todayVN()}.xlsx`);
+            return;
+          }
+          const rows = sessionRows.map(s => ({
             "Tài khoản":            s._accountKey,
             "Người phụ trách":      s._owner || "",
+            "Giỏ":                  s._cart || "",
             "Tiêu đề phiên":        s.title || "",
             "Trạng thái":           s.status===1 ? "Đang LIVE" : "Đã kết thúc",
             "Thời gian bắt đầu":    fmtTime(s.startTime),
@@ -783,30 +945,55 @@
         }}/>
       </div>
 
+      {/* MỘT BẢNG DUY NHẤT: phiên live, hoặc danh sách tài khoản (Không LIVE / Lỗi cookie) */}
       <div className="result-row">
-        <div className="result-count">Hiển thị <b>{pageRows.length}</b> / <b>{filtered.length}</b> phiên live{activeAccount!=="all"&&<> · <b style={{color:"var(--orange)"}}>{activeAccount}</b></>}{searchQ&&<> · Tìm: <b>"{searchQ}"</b></>}</div>
-        {filtered.length > PAGE_SIZE && <div className="result-count" style={{marginLeft:"auto"}}>Trang {currentPage}/{totalPages}</div>}
+        <div className="result-count">
+          Hiển thị <b>{pageRows.length}</b> / <b>{rowsAll.length}</b> {accountMode?"tài khoản":"phiên live"}
+          {ownerFilter!=="all"&&<> · <b style={{color:"var(--orange)"}}>{ownerFilter==="__none__"?"Chưa gán":ownerFilter}</b></>}
+          {cartFilter!=="all"&&<> · 🛒 <b style={{color:"var(--orange)"}}>{cartFilter==="__none__"?"Chưa có giỏ":cartFilter}</b></>}
+          {statusFilter!=="all"&&<> · <b style={{color:"var(--orange)"}}>{STATUS_LABEL[statusFilter]}</b></>}
+          {activeAccount!=="all"&&<> · <b style={{color:"var(--orange)"}}>{activeAccount}</b><button onClick={()=>setActiveAccount("all")} style={{marginLeft:4,background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}}>✕</button></>}
+          {searchQ&&<> · Tìm: <b>"{searchQ}"</b></>}
+        </div>
+        {rowsAll.length > PAGE_SIZE && <div className="result-count" style={{marginLeft:"auto"}}>Trang {currentPage}/{totalPages}</div>}
       </div>
 
       <div className="table-wrap"><table>
-        <thead><tr>
-          <th>Tài khoản</th><th>Phiên live</th><th>Trạng thái</th>
-          <SortTh label="Lượt xem"    field="views"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Người xem"   field="viewers"         sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Thời lượng"  field="duration"        sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Thêm giỏ"    field="atc"             sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Tỷ lệ CĐ"   field="conversionRate"  sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Đơn đặt"     field="placedOrders"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Đơn XN"      field="confirmedOrders" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <SortTh label="Doanh thu XN" field="confirmedSales" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-          <th>Sản phẩm</th>
-        </tr></thead>
-        <tbody>
-          {pageRows.length === 0
-            ? <tr className="empty-row"><td colSpan={12}><span className="empty-icon">🔍</span>{hasFilters?"Không tìm thấy phiên live nào":"Chưa có dữ liệu"}</td></tr>
-            : pageRows.map(s=><SessionRow key={`${s._accountKey}-${s.sessionId}`} session={s} accountKey={s._accountKey} onOpenProducts={openProducts}/>)
-          }
-        </tbody>
+        {accountMode ? <>
+          <thead><tr><th>#</th><th>Tài khoản</th><th>Phụ trách</th><th>Giỏ</th><th className="right">Tổng phiên</th><th>Phiên gần nhất</th><th>Ghi chú</th></tr></thead>
+          <tbody>
+            {pageRows.length === 0
+              ? <tr className="empty-row"><td colSpan={7}><span className="empty-icon">🔍</span>Không có tài khoản nào khớp bộ lọc</td></tr>
+              : pageRows.map((r,i)=><tr key={r.key} style={r.error?undefined:{cursor:"pointer"}} title={r.error?undefined:"Xem các phiên live của tài khoản này"}
+                  onClick={()=>{ if (!r.error) { setActiveAccount(r.key); setStatusFilter("all"); } }}>
+                  <td style={{color:"var(--text-muted)"}}>{(currentPage-1)*PAGE_SIZE+i+1}</td>
+                  <td><span className="account-tag">{r.key}</span></td>
+                  <td>{r.owner || <span style={{color:"var(--text-muted)"}}>Chưa gán</span>}</td>
+                  <td>{r.cart || "—"}</td>
+                  <td className="num right">{r.total}</td>
+                  <td>{r.last ? fmtTime(r.last) : "—"}</td>
+                  <td style={{color: r.error ? "var(--red)" : "var(--text-dim)"}}>{r.note}</td>
+                </tr>)}
+          </tbody>
+        </> : <>
+          <thead><tr>
+            <th>Tài khoản</th><th>Phiên live</th><th>Trạng thái</th>
+            <SortTh label="Lượt xem"    field="views"           sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Người xem"   field="viewers"         sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Thời lượng"  field="duration"        sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Thêm giỏ"    field="atc"             sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Tỷ lệ CĐ"   field="conversionRate"  sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Đơn đặt"     field="placedOrders"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Đơn XN"      field="confirmedOrders" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Doanh thu XN" field="confirmedSales" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <th>Sản phẩm</th>
+          </tr></thead>
+          <tbody>
+            {pageRows.length === 0
+              ? <tr className="empty-row"><td colSpan={12}><span className="empty-icon">🔍</span>{hasFilters?"Không tìm thấy phiên live nào":"Chưa có dữ liệu"}</td></tr>
+              : pageRows.map(s=><SessionRow key={`${s._accountKey}-${s.sessionId}`} session={s} accountKey={s._accountKey} owner={s._owner} cart={s._cart} onOpenProducts={openProducts}/>)}
+          </tbody>
+        </>}
       </table></div>
 
       {totalPages > 1 && <div className="pagination">
@@ -1615,7 +1802,7 @@
 
     return <>
       <div className="summary-bar">
-        <div className="summary-card"><div className="summary-card-label">Thiết bị</div><div className="summary-card-value">{fmtNum(summary.devices)}</div><div className="summary-card-sub">{hasFilter?`theo bộ lọc (tổng ${items.length})`:"đã đồng bộ gần nhất"}</div></div>
+        <div className="summary-card"><div className="summary-card-label">Thiết bị</div><div className="summary-card-value">{fmtNum(summary.devices)}</div><div className="summary-card-sub">{hasFilter?"theo bộ lọc":"đã đồng bộ gần nhất"}</div></div>
         <div className="summary-card"><div className="summary-card-label">Đang có giỏ hàng</div><div className="summary-card-value orange">{fmtNum(summary.withCart)}</div><div className="summary-card-sub">thiết bị &gt; 0 sản phẩm</div></div>
         <div className="summary-card"><div className="summary-card-label">Tổng sản phẩm</div><div className="summary-card-value green">{fmtNum(summary.totalCart)}</div><div className="summary-card-sub">{hasFilter?"cộng dồn theo bộ lọc":"cộng dồn mọi thiết bị"}</div></div>
       </div>

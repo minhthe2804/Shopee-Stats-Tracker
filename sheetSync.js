@@ -230,7 +230,65 @@ export async function syncCommissionToPhuTrachSheet(
     return { column: newCol, rows: accountRows.length, cleared: clearedCount };
 }
 
-// ── Đọc lịch sử hoa hồng nhiều ngày từ tab PHỤ TRÁCH ─────────────────────────
+// ── Đọc mapping "Người phụ trách" (owner) trực tiếp từ tab PHỤ TRÁCH ─────────
+// Thay cho việc phải sửa tay owners.json mỗi khi sheet có tài khoản mới — server
+// gọi hàm này định kỳ (xem server.js) để owner luôn khớp với cột PHỤ TRÁCH /
+// ACCOUNT hiện tại trên sheet.
+//
+// Bỏ qua (không đưa vào mapping):
+//   - Dòng có ACCOUNT bắt đầu bằng "Hợp Tác Live" (placeholder nhóm chưa gán
+//     tài khoản Shopee thật, vd "Hợp Tác Live_Yến1")
+//   - Dòng có PHỤ TRÁCH là "ACC MỚI" (placeholder acc mới chưa phân công)
+//   - Dòng thiếu ACCOUNT hoặc PHỤ TRÁCH
+const PLACEHOLDER_OWNER_VALUES = ["acc mới", "acc moi"];
+function isPlaceholderAccountValue(v) {
+    return String(v || "").trim().toLowerCase().startsWith("hợp tác live") ||
+           String(v || "").trim().toLowerCase().startsWith("hop tac live");
+}
+function isPlaceholderOwnerValue(v) {
+    return PLACEHOLDER_OWNER_VALUES.includes(String(v || "").trim().toLowerCase());
+}
+
+export async function readOwnersFromSheet(
+    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", ownerHeader = "PHỤ TRÁCH"
+) {
+    const sheets = await getSheets();
+
+    const row1Res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tabName}!1:1` });
+    const row1Values = row1Res.data.values?.[0] || [];
+    const accountColIdx0 = row1Values.findIndex((h) => (h || "").trim() === accountHeader);
+    const ownerColIdx0   = row1Values.findIndex((h) => (h || "").trim() === ownerHeader);
+    if (accountColIdx0 === -1) throw new Error(`Không tìm thấy cột "${accountHeader}" trong tab "${tabName}"`);
+    if (ownerColIdx0 === -1)   throw new Error(`Không tìm thấy cột "${ownerHeader}" trong tab "${tabName}"`);
+
+    // Cột GIỎ (tuỳ chọn) — số giỏ hàng của từng tài khoản (100 / 500 ...)
+    const cartColIdx0 = row1Values.findIndex((h) => String(h || "").trim().toUpperCase() === "GIỎ");
+    const lo = Math.min(accountColIdx0, ownerColIdx0, cartColIdx0 === -1 ? Infinity : cartColIdx0);
+    const hi = Math.max(accountColIdx0, ownerColIdx0, cartColIdx0);
+    const res = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID,
+        range: `${tabName}!${colLetter(lo + 1)}2:${colLetter(hi + 1)}`,
+    });
+    const rows = res.data.values || [];
+    const relAccountIdx = accountColIdx0 - lo;
+    const relOwnerIdx   = ownerColIdx0 - lo;
+    const relCartIdx    = cartColIdx0 === -1 ? -1 : cartColIdx0 - lo;
+
+    const map = {};
+    const carts = {};
+    let skipped = 0;
+    for (const row of rows) {
+        const account = (row[relAccountIdx] || "").trim();
+        const owner   = (row[relOwnerIdx] || "").trim();
+        if (!account || !owner) continue;
+        if (isPlaceholderAccountValue(account) || isPlaceholderOwnerValue(owner)) { skipped++; continue; }
+        map[account] = owner;
+        if (relCartIdx !== -1) { const c = String(row[relCartIdx] ?? "").trim(); if (c) carts[account] = c; }
+    }
+    return { map, carts, count: Object.keys(map).length, skipped, cartColFound: cartColIdx0 !== -1 };
+}
+
+
 // Dùng cho báo cáo (biểu đồ xu hướng, xếp hạng theo tuần) — tận dụng lại dữ
 // liệu đã đồng bộ mỗi ngày thay vì gọi lại API Shopee.
 // Trả về: { days: ["dd.mm", ...] (cũ→mới), accounts: [key,...], matrix: { key: { "dd.mm": number|null } } }

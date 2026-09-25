@@ -8,7 +8,7 @@ import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDo
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
-import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory } from "./sheetSync.js";
+import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory, readOwnersFromSheet } from "./sheetSync.js";
 import { LiveCart, connectLiveCartDb, isLiveCartDbConnected } from "./liveCartModel.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -28,16 +28,101 @@ const LIVE_CART_TOKEN = process.env.LIVE_CART_TOKEN || "";
 await connectLiveCartDb();
 
 // ── Người phụ trách (owner) theo từng tài khoản ──────────────────────────────
-// owners.json: { "accountKey": "TÊN NGƯỜI PHỤ TRÁCH", ... } — đặt cùng thư mục với server.js.
-// Nếu không có file này, mọi tài khoản sẽ có owner: null (không lỗi).
+// Nguồn THẬT là tab "PHỤ TRÁCH" trên Google Sheet (cột PHỤ TRÁCH + ACCOUNT) —
+// đọc lại định kỳ bên dưới (refreshOwnersFromSheet) nên khi có tài khoản mới
+// hoặc đổi người phụ trách trên sheet, server tự cập nhật, KHÔNG cần sửa tay
+// owners.json nữa. owners.json chỉ còn dùng làm dữ liệu tạm lúc mới khởi động
+// server (trước khi lần đọc sheet đầu tiên hoàn tất) hoặc khi sheet lỗi.
 let OWNERS = {};
+let CARTS  = {}; // { account: "100" | "500" | ... } — cột GIỎ trên tab PHỤ TRÁCH
+let ownersSource = "file"; // "file" (owners.json, tạm) | "sheet" (đã đồng bộ từ Google Sheet)
+let ownersLastSync = null;
 try {
     OWNERS = JSON.parse(fs.readFileSync(path.join(__dirname, "owners.json"), "utf-8"));
-    console.log(`✅ Đã tải ${Object.keys(OWNERS).length} mapping người phụ trách`);
+    console.log(`✅ Đã tải ${Object.keys(OWNERS).length} mapping người phụ trách (owners.json, tạm — sẽ được thay bằng dữ liệu từ Sheet)`);
 } catch {
-    console.warn("⚠️  Không tìm thấy owners.json — bỏ qua, mọi tài khoản sẽ không có người phụ trách");
+    console.warn("⚠️  Không tìm thấy owners.json — bỏ qua, chờ đồng bộ từ Sheet");
 }
-const getOwner = (key) => OWNERS[key] || null;
+// Khớp owner không phân biệt hoa/thường và bỏ khoảng trắng thừa (sheet & Firestore hay lệch kiểu này)
+const normKey = (k) => String(k || "").trim().toLowerCase();
+let _normFor = null, _normMap = {};
+function ownersNormMap() {
+    if (_normFor !== OWNERS) {
+        _normMap = {};
+        for (const [k, v] of Object.entries(OWNERS)) _normMap[normKey(k)] = v;
+        _normFor = OWNERS;
+    }
+    return _normMap;
+}
+const getOwner = (key) => OWNERS[key] || ownersNormMap()[normKey(key)] || null;
+let _cartNormFor = null, _cartNorm = {};
+const getCart = (key) => {
+    if (CARTS[key] != null) return CARTS[key];
+    if (_cartNormFor !== CARTS) { _cartNorm = {}; for (const [k, c] of Object.entries(CARTS)) _cartNorm[normKey(k)] = c; _cartNormFor = CARTS; }
+    return _cartNorm[normKey(key)] ?? null;
+};
+
+// Đọc lại mapping owner từ tab PHỤ TRÁCH trên Google Sheet và GHI ĐÈ toàn bộ
+// OWNERS trong bộ nhớ. Nếu đọc sheet lỗi (mất mạng, sheet đổi cấu trúc, v.v.)
+// thì GIỮ NGUYÊN mapping cũ đang có (không xoá dữ liệu tốt vì 1 lần lỗi).
+async function refreshOwnersFromSheet() {
+    try {
+        const { map, carts, count, skipped, cartColFound } = await readOwnersFromSheet();
+        OWNERS = map;
+        CARTS  = carts || {};
+        if (!cartColFound) console.warn("⚠️  [Owners] Không thấy cột \"GIỎ\" trong tab PHỤ TRÁCH — bỏ qua bộ lọc giỏ");
+        ownersSource = "sheet";
+        ownersLastSync = new Date();
+        console.log(`✅ [Owners] Đồng bộ ${count} mapping từ tab PHỤ TRÁCH (bỏ qua ${skipped} dòng placeholder: Hợp Tác Live.../ACC MỚI)`);
+    } catch (err) {
+        console.warn(`⚠️  [Owners] Lỗi đồng bộ từ Sheet, giữ nguyên mapping hiện có (${Object.keys(OWNERS).length} tài khoản):`, err.message);
+    }
+}
+// Đọc ngay lúc khởi động (không chặn server nếu sheet chậm/lỗi — request đầu
+// tiên vẫn dùng tạm owners.json cho tới khi lần đồng bộ này xong).
+refreshOwnersFromSheet();
+// Rồi tự làm mới mỗi 10 phút — sheet đổi thì tối đa 10 phút sau server khớp theo,
+// không cần deploy lại hay sửa file.
+setInterval(() => { refreshOwnersFromSheet(); }, 10 * 60 * 1000);
+
+// Kích hoạt thủ công để test ngay, không cần chờ chu kỳ 10 phút.
+app.post("/api/sync-owners", async (req, res) => {
+    try {
+        await refreshOwnersFromSheet();
+        res.json({ success: true, source: ownersSource, count: Object.keys(OWNERS).length, lastSync: ownersLastSync });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Chẩn đoán: vì sao account không có owner? GET /api/owners-debug
+app.get("/api/owners-debug", async (req, res) => {
+    try {
+        const accounts = await getAccountsFromFirestore();
+        const fsKeys = accounts.map(a => a.key).filter(Boolean);
+        const fsNorm = new Set(fsKeys.map(normKey));
+        const noOwner = fsKeys.filter(k => !getOwner(k));
+        const sheetNotInFirestore = Object.keys(OWNERS).filter(k => !fsNorm.has(normKey(k)));
+        const dup = {};
+        for (const k of Object.keys(OWNERS)) { const n = normKey(k); (dup[n] = dup[n] || []).push(k); }
+        const duplicates = Object.values(dup).filter(v => v.length > 1);
+        const byOwner = {};
+        for (const k of fsKeys) { const o = getOwner(k) || "(chưa gán)"; byOwner[o] = (byOwner[o] || 0) + 1; }
+        res.json({
+            success: true, ownersSource, ownersLastSync,
+            ownersMappingCount: Object.keys(OWNERS).length,
+            firestoreAccounts: fsKeys.length,
+            firestoreByOwner: byOwner,
+            firestoreWithoutOwnerCount: noOwner.length,
+            sheetNotInFirestoreCount: sheetNotInFirestore.length,
+            sheetNotInFirestore,
+            duplicateKeysInSheet: duplicates,
+            firestoreWithoutOwnerSample: noOwner.slice(0, 50),
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // ── Người phụ trách tài khoản Shopee Video ───────────────────────────────────
 // owners_video.json: { "accountKey": "TÊN NGƯỜI PHỤ TRÁCH VIDEO", ... }
@@ -554,7 +639,7 @@ app.get("/api/stats", async (req, res) => {
         // Concurrency giới hạn (không phải tuần tự, không phải song song vô hạn)
         // + jitter ngẫu nhiên + backoff thích ứng nếu tỉ lệ lỗi tăng đột biến
         const settled = await runPool(accounts, fetchAccount, CONCURRENCY, statsBackoff);
-        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key) }));
+        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), cart: getCart(r.key) }));
 
         console.log(`✅ Stats: ${results.length} accounts in ${Date.now() - t0}ms`);
         statsCache.data = results; statsCache.at = Date.now();
