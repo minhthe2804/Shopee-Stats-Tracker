@@ -16,9 +16,16 @@ const liveCartSchema = new mongoose.Schema(
         pcName:        { type: String, default: "" },
         serial:        { type: String, default: "" },
         shopeeAccount: { type: String, default: "", index: true },
-        owner:         { type: String, default: null }, // tra từ owners.json theo shopeeAccount
-        cartCount:     { type: Number, required: true },
-        capturedAt:    { type: Date, default: Date.now }, // thời điểm live_monitor.py chụp số liệu
+        owner:         { type: String, default: null }, // ưu tiên getOwner() (sync từ Sheet mỗi 10'), fallback owner PC gửi
+        // isLive=true  -> đang live, cartCount là số thật của phiên hiện tại.
+        // isLive=false -> PC đã xác nhận máy KHÔNG còn live (vừa rời màn
+        //   hình live) -> cartCount=null, không còn ý nghĩa, tránh hiểu nhầm
+        //   là giỏ hàng hiện tại.
+        // isLive=null  -> bản ghi cũ từ trước khi có field này (PC chưa cập
+        //   nhật) — giữ cartCount cũ, dashboard tự coi là "chưa rõ".
+        isLive:        { type: Boolean, default: null },
+        cartCount:     { type: Number, default: null }, // null khi isLive=false; luôn là số khi isLive=true
+        capturedAt:    { type: Date, default: Date.now }, // thời điểm live_monitor.py chụp số liệu (hoặc xác nhận hết live)
     },
     {
         timestamps: { createdAt: false, updatedAt: true }, // chỉ cần updatedAt (lần đồng bộ gần nhất)

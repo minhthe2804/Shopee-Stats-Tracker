@@ -577,10 +577,18 @@ app.post("/api/live-cart", async (req, res) => {
         }
     }
     try {
-        const { pc_name, device_id, serial, shopee_account, owner: bodyOwner, cart_count, captured_at } = req.body || {};
-        if (!device_id || cart_count == null) {
-            return res.status(400).json({ success: false, error: "Thiếu device_id hoặc cart_count" });
+        const {
+            pc_name, device_id, serial, shopee_account,
+            owner: bodyOwner, is_live, cart_count, captured_at,
+        } = req.body || {};
+        if (!device_id) {
+            return res.status(400).json({ success: false, error: "Thiếu device_id" });
         }
+        // PC bản cũ chưa gửi is_live -> coi như hành vi cũ (có cart_count = đang live).
+        const isLive = typeof is_live === "boolean" ? is_live : (cart_count != null);
+        // isLive=false là PC chủ động báo "hết live" -> cartCount PHẢI null,
+        // không tin cart_count gửi kèm (không nên có, nhưng phòng hờ PC lỗi).
+        const cartCount = isLive && cart_count != null ? Number(cart_count) : null;
         await LiveCart.findOneAndUpdate(
             { deviceId: device_id },
             {
@@ -588,9 +596,12 @@ app.post("/api/live-cart", async (req, res) => {
                 pcName:        pc_name || "",
                 serial:        serial || "",
                 shopeeAccount: shopee_account || "",
-                // Ưu tiên owner do PC gửi lên (đọc từ Google Sheet, luôn mới); không có thì tra owners.json tĩnh trên server.
-                owner:         (typeof bodyOwner === "string" && bodyOwner.trim()) || getOwner(shopee_account) || null,
-                cartCount:     Number(cart_count),
+                // getOwner() tự đồng bộ từ tab PHỤ TRÁCH mỗi 10' (xem refreshOwnersFromSheet
+                // phía trên) nên là nguồn ưu tiên — không còn phụ thuộc cả 4 PC phải chạy
+                // bản mới mới có owner đúng; bodyOwner chỉ còn là dự phòng.
+                owner:         getOwner(shopee_account) || (typeof bodyOwner === "string" && bodyOwner.trim()) || null,
+                isLive,
+                cartCount,
                 capturedAt:    captured_at ? new Date(captured_at) : new Date(),
             },
             { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -608,17 +619,37 @@ app.get("/api/live-cart", async (req, res) => {
         return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
     }
     try {
-        const docs = await LiveCart.find({}).sort({ cartCount: -1, updatedAt: -1 }).lean();
-        const data = docs.map((d) => ({
-            deviceId:      d.deviceId,
-            pcName:        d.pcName,
-            serial:        d.serial,
-            shopeeAccount: d.shopeeAccount,
-            owner:         d.owner,
-            cartCount:     d.cartCount,
-            capturedAt:    d.capturedAt,
-            updatedAt:     d.updatedAt,
-        }));
+        // Máy đang live lên trước, máy đã hết live rơi xuống dưới — sort thẳng
+        // theo cartCount sẽ để số CŨ của máy vừa hết live (cartCount trước khi
+        // có field isLive) lẫn vào đầu danh sách như đang live thật.
+        const docs = await LiveCart.find({}).sort({ isLive: -1, cartCount: -1, updatedAt: -1 }).lean();
+        const data = docs.map((d) => {
+            // GIỎ CỐ ĐỊNH của account (cột "GIỎ" tab PHỤ TRÁCH, qua getCart() —
+            // CÙNG một bộ nhớ đệm đồng bộ mỗi 10' đang dùng cho tab Thống Kê,
+            // KHÔNG đọc/ghi gì thêm vào Sheet — so sánh với số thực tế đọc được
+            // từ máy để tính "thiếu", tính và hiển thị TRÊN WEB mà thôi.
+            const baselineRaw = getCart(d.shopeeAccount);
+            const cartBaseline = baselineRaw != null && baselineRaw !== "" && !isNaN(Number(baselineRaw))
+                ? Number(baselineRaw) : null;
+            // Chỉ tính thiếu khi ĐANG LIVE (có số thật) và sheet có giỏ cố định
+            // cho account đó — máy không live hoặc account chưa gán GIỎ thì
+            // không đủ cơ sở để kết luận "thiếu", trả null thay vì đoán.
+            const shortage = (d.isLive && d.cartCount != null && cartBaseline != null)
+                ? cartBaseline - d.cartCount : null;
+            return {
+                deviceId:      d.deviceId,
+                pcName:        d.pcName,
+                serial:        d.serial,
+                shopeeAccount: d.shopeeAccount,
+                owner:         d.owner,
+                isLive:        d.isLive,
+                cartCount:     d.cartCount,
+                cartBaseline,
+                shortage,
+                capturedAt:    d.capturedAt,
+                updatedAt:     d.updatedAt,
+            };
+        });
         res.json({ success: true, data, fetchedAt: Date.now() });
     } catch (err) {
         console.error("❌ Lỗi đọc live-cart:", err);
