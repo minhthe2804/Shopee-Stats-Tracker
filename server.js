@@ -579,7 +579,7 @@ app.post("/api/live-cart", async (req, res) => {
     try {
         const {
             pc_name, device_id, serial, shopee_account,
-            owner: bodyOwner, is_live, cart_count, captured_at,
+            owner: bodyOwner, box_name, machine_no, is_live, cart_count, captured_at,
         } = req.body || {};
         if (!device_id) {
             return res.status(400).json({ success: false, error: "Thiếu device_id" });
@@ -600,6 +600,12 @@ app.post("/api/live-cart", async (req, res) => {
                 // phía trên) nên là nguồn ưu tiên — không còn phụ thuộc cả 4 PC phải chạy
                 // bản mới mới có owner đúng; bodyOwner chỉ còn là dự phòng.
                 owner:         getOwner(shopee_account) || (typeof bodyOwner === "string" && bodyOwner.trim()) || null,
+                // PC đã khớp qua Xiaowei WS (y het Xiaowei Finder) thì gửi thẳng
+                // box/machine thật-time; không khớp (box_name/machine_no rỗng/undefined)
+                // thì GIỮ NGUYÊN giá trị cũ trong DB (đừng ghi đè bằng null) — máy
+                // tạm thời không lấy được tag không có nghĩa là nó đổi chỗ.
+                ...(typeof box_name === "string" && box_name.trim() ? { boxName: box_name.trim() } : {}),
+                ...(typeof machine_no === "string" && machine_no.trim() ? { machineNo: machine_no.trim() } : {}),
                 isLive,
                 cartCount,
                 capturedAt:    captured_at ? new Date(captured_at) : new Date(),
@@ -642,6 +648,8 @@ app.get("/api/live-cart", async (req, res) => {
                 serial:        d.serial,
                 shopeeAccount: d.shopeeAccount,
                 owner:         d.owner,
+                boxName:       d.boxName,
+                machineNo:     d.machineNo,
                 isLive:        d.isLive,
                 cartCount:     d.cartCount,
                 cartBaseline,

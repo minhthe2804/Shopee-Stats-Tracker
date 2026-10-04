@@ -1880,6 +1880,8 @@
         <thead><tr>
           <th>Tài khoản</th>
           <th>Người phụ trách</th>
+          <th>Tên Box</th>
+          <th>Số máy</th>
           <th>PC</th>
           <th>Serial</th>
           <th>Trạng thái</th>
@@ -1890,11 +1892,13 @@
         </tr></thead>
         <tbody>
           {filtered.length===0
-            ? <tr className="empty-row"><td colSpan={9}><span className="empty-icon">🛒</span>Chưa có dữ liệu giỏ hàng live nào</td></tr>
+            ? <tr className="empty-row"><td colSpan={11}><span className="empty-icon">🛒</span>Chưa có dữ liệu giỏ hàng live nào</td></tr>
             : filtered.map(d => { const ls = liveStatusOf(d); return (
               <tr key={d.deviceId}>
                 <td><span className="account-tag">{d.shopeeAccount || "(không khớp)"}</span></td>
                 <td>{d.owner || <span style={{color:"var(--text-muted)"}}>—</span>}</td>
+                <td style={{color:"var(--text-muted)",fontSize:12}}>{d.boxName || "—"}</td>
+                <td style={{color:"var(--text-muted)",fontSize:12}}>{d.machineNo || "—"}</td>
                 <td>{d.pcName || "—"}</td>
                 <td style={{color:"var(--text-muted)",fontSize:12}}>{d.serial || "—"}</td>
                 <td>

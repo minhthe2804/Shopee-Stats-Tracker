@@ -25,6 +25,12 @@ const liveCartSchema = new mongoose.Schema(
         //   nhật) — giữ cartCount cũ, dashboard tự coi là "chưa rõ".
         isLive:        { type: Boolean, default: null },
         cartCount:     { type: Number, default: null }, // null khi isLive=false; luôn là số khi isLive=true
+        // Vị trí máy THẬT-TIME từ Xiaowei WS (xem build_device_location_map()
+        // trong live_monitor.py) — KHÔNG đọc từ Google Sheet, nên luôn mới
+        // hơn cột TÊN BOX/SỐ MÁY trên sheet (cột đó chỉ cập nhật khi ai đó
+        // bấm "Áp dụng" trong Xiaowei Finder).
+        boxName:       { type: String, default: null },
+        machineNo:     { type: String, default: null },
         capturedAt:    { type: Date, default: Date.now }, // thời điểm live_monitor.py chụp số liệu (hoặc xác nhận hết live)
     },
     {
