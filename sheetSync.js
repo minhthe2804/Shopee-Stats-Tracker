@@ -118,7 +118,7 @@ export async function syncCommissionToSheet(dateStr, rows) {
 }
 
 /**
- * Chèn 1 cột hoa hồng mới vào tab "PHỤ TRÁCH", ngay TRƯỚC cột "HH HÔM QUA".
+ * Chèn 1 cột hoa hồng mới vào tab "PHỤ TRÁCH", ngay TRƯỚC cột "Tổng".
  * Với mỗi dòng tài khoản đã có sẵn trong sheet, điền công thức
  *   =IFERROR(VLOOKUP(<ô ACCOUNT dòng đó>, HH!A:B, 2, FALSE), "")
  * để Google Sheets tự tính, sau đó ĐỌC LẠI kết quả đã tính và GHI ĐÈ công thức
@@ -136,7 +136,7 @@ export async function syncCommissionToSheet(dateStr, rows) {
  */
 export async function syncCommissionToPhuTrachSheet(
     dayLabel,
-    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "HH HÔM QUA"
+    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "Tổng"
 ) {
     const sheets = await getSheets();
 
