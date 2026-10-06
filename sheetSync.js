@@ -294,7 +294,7 @@ export async function readOwnersFromSheet(
 // Trả về: { days: ["dd.mm", ...] (cũ→mới), accounts: [key,...], matrix: { key: { "dd.mm": number|null } } }
 export async function readPhuTrachHistory(
     maxDays = 30,
-    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "HH HÔM QUA"
+    tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "Tổng"
 ) {
     const sheets = await getSheets();
 
