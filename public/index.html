@@ -335,10 +335,58 @@
       .summary-bar, .summary-bar-6, .summary-bar-7 { grid-template-columns:repeat(2,1fr); }
       .toolbar { flex-direction:column; align-items:stretch; }
       .search-wrap { max-width:100%; }
+      .toolbar-divider { display:none; }
+      .filter-group { flex-wrap:wrap; row-gap:6px; }
+      .filter-group .sort-select, .filter-group .date-input { flex:1; min-width:0; }
     }
     @media (max-width:600px) {
+      html, body { overflow-x:hidden; }
       .summary-bar, .summary-bar-6, .summary-bar-7 { grid-template-columns:1fr 1fr; }
       .cards-grid { grid-template-columns:1fr 1fr; }
+
+      /* Header: stack logo/title and right-side controls instead of squeezing them onto one row */
+      .header { height:auto; min-height:56px; padding:8px 14px; flex-wrap:wrap; row-gap:8px; position:sticky; }
+      .header-right { margin-left:0; width:100%; flex-wrap:wrap; justify-content:space-between; }
+
+      /* Tabs: let them scroll horizontally instead of wrapping/cramming */
+      .tabs { overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+      .tabs::-webkit-scrollbar { display:none; }
+      .tab-btn { flex-shrink:0; padding:11px 14px; font-size:12.5px; }
+
+      /* Toolbar controls take full width when stacked */
+      .filter-group { width:100%; }
+      .filter-group .sort-select, .filter-group .date-input { width:100%; }
+
+      /* Modal: dock to bottom, closer to full-screen */
+      .modal-overlay { padding:0; align-items:flex-end; }
+      .modal-box { max-width:100%; max-height:94vh; border-radius:16px 16px 0 0; }
+      .modal-summary { font-size:11.5px; row-gap:4px; }
+      .product-cell { max-width:220px; }
+
+      /* Source tabs: one per row instead of squeezed columns */
+      .source-tab-bar { flex-direction:column; }
+      .source-tab { min-width:0; }
+
+      /* Ranking rows: let the bar wrap to its own line */
+      .rank-row { flex-wrap:wrap; row-gap:8px; }
+      .rank-bar-wrap { order:3; flex-basis:100%; }
+      .rank-stats { margin-left:auto; min-width:0; }
+
+      .comm-date-bar, .period-toggle, .days-toggle { row-gap:8px; }
+      .result-row { flex-wrap:wrap; row-gap:6px; }
+      .pagination { flex-wrap:wrap; row-gap:6px; }
+
+      /* Tables stay horizontally scrollable, but a bit narrower min-width so more fits before scrolling */
+      table { min-width:640px; }
+      .comm-table { min-width:560px; }
+      .table-wrap, .owner-table-wrap { -webkit-overflow-scrolling:touch; }
+    }
+    @media (max-width:420px) {
+      .summary-bar, .summary-bar-6, .summary-bar-7, .cards-grid { grid-template-columns:1fr; }
+      .header-sub { display:none; }
+      .header-time { display:none; }
+      .header-title { font-size:14px; }
+      .header-logo { width:30px; height:30px; font-size:15px; }
     }
   </style>
 </head>
