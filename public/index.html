@@ -418,6 +418,22 @@
   };
   const sumField = (arr, f) => arr.reduce((a, s) => a + (s[f] || 0), 0);
 
+  /* ── SO SÁNH TĂNG/GIẢM (phiên live hiện tại vs phiên live trước đã kết thúc) ── */
+  function DeltaBadge({ curr, prev }) {
+    const c = curr || 0, p = prev || 0;
+    if (p === 0) {
+      if (c === 0) return <span style={{color:"var(--text-muted)",fontSize:11}}>0%</span>;
+      return <span style={{color:"var(--green)",fontWeight:700,fontSize:11}}>🆕 Mới</span>;
+    }
+    const diff = c - p;
+    const pct = (diff / p) * 100;
+    if (diff === 0) return <span style={{color:"var(--text-muted)",fontSize:11}}>– 0%</span>;
+    const up = diff > 0;
+    return <span style={{color: up ? "var(--green)" : "var(--red)", fontWeight:700, fontSize:11}}>
+      {up ? "▲" : "▼"} {Math.abs(pct).toFixed(0)}%
+    </span>;
+  }
+
   /* ── XUẤT EXCEL (SheetJS) ── */
   // sheetsData: [[tênSheet, [{cột:giá trị},...]], ...]
   function downloadWorkbook(sheetsData, filename) {
@@ -518,7 +534,7 @@
   }
 
   /* ── SESSION ROW ── */
-  function SessionRow({ session, accountKey, owner, cart, onOpenProducts }) {
+  function SessionRow({ session, accountKey, owner, cart, onOpenProducts, onToggleCompare, compareActive, hasPrev }) {
     const isLive = session.status === 1;
     return <tr>
       <td><span className="account-tag">{accountKey}</span>{(owner||cart)&&<div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{owner||"Chưa gán"}{cart?` · 🛒 ${cart}`:""}</div>}</td>
@@ -533,9 +549,114 @@
       <td className="num right">{fmtNum(session.confirmedOrders)}</td>
       <td className="num green big right">{fmtVND(session.confirmedSales)}</td>
       <td>
-        {session.sessionId != null && <button className="session-products-btn" onClick={()=>onOpenProducts(accountKey, session.sessionId, session.title)}>
-          📦 Sản phẩm
-        </button>}
+        <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+          {session.sessionId != null && <button className="session-products-btn" onClick={()=>onOpenProducts(accountKey, session.sessionId, session.title)}>
+            📦 Sản phẩm
+          </button>}
+          {session.sessionId != null && <button
+            className="session-products-btn"
+            style={compareActive ? {borderColor:"var(--orange)", color:"var(--orange)", background:"var(--orange-dim)"} : (!hasPrev ? {opacity:0.5} : undefined)}
+            onClick={()=>onToggleCompare(accountKey, session)}
+            title={hasPrev ? "So sánh với phiên live trước đã kết thúc" : "Chưa có phiên trước để so sánh"}
+          >
+            📊 So sánh
+          </button>}
+        </div>
+      </td>
+    </tr>;
+  }
+
+  /* ── Ô tải click cho MỘT phiên (hiện tại hoặc trước) — độc lập hoàn toàn
+     với ô còn lại, nên không bao giờ bị "kẹt" vì phiên kia đã có/đang
+     lỗi/đang tải. Luôn có đường thử lại khi state==="error". ── */
+  function ClickLoadCell({ label, state, onLoad }) {
+    if (state?.state === "ok") {
+      return <span style={{fontSize:12.5}}>{label}: <b>{fmtNum(state.total)}</b></span>;
+    }
+    return (
+      <button
+        className="session-products-btn"
+        disabled={state?.state === "loading"}
+        onClick={onLoad}
+        style={{fontSize:11, padding:"3px 9px"}}
+      >
+        {state?.state === "loading" ? `Đang tải ${label}...`
+          : state?.state === "error" ? `⚠ Thử lại (${label})`
+          : `Tải click ${label}`}
+      </button>
+    );
+  }
+
+  /* ── COMPARE ROW (so sánh phiên hiện tại vs phiên trước đã kết thúc, cùng tài khoản) ── */
+  function CompareRow({ accountKey, session, prevSession, colSpan, clickTotals, onLoadClick }) {
+    if (!prevSession) {
+      return <tr>
+        <td colSpan={colSpan} style={{background:"var(--surface2)", padding:"14px 18px", color:"var(--text-muted)", fontSize:12.5}}>
+          Không tìm thấy phiên live nào trước đó (đã kết thúc) của tài khoản <b>{accountKey}</b> để so sánh.
+        </td>
+      </tr>;
+    }
+    const metricRows = [
+      ["Lượt xem",          session.views,                                   prevSession.views,                                   fmtNum],
+      ["Người xem",         session.viewers,                                 prevSession.viewers,                                 fmtNum],
+      ["Thời lượng (phút)", session.duration ? Math.round(session.duration/60000) : 0, prevSession.duration ? Math.round(prevSession.duration/60000) : 0, fmtNum],
+      ["Thêm giỏ",          session.atc,                                     prevSession.atc,                                     fmtNum],
+      ["Tỷ lệ chuyển đổi",  session.conversionRate!=null?+(session.conversionRate*100).toFixed(1):0, prevSession.conversionRate!=null?+(prevSession.conversionRate*100).toFixed(1):0, v=>v+"%"],
+      ["Đơn đặt",           session.placedOrders,                            prevSession.placedOrders,                            fmtNum],
+      ["Đơn xác nhận",      session.confirmedOrders,                         prevSession.confirmedOrders,                         fmtNum],
+      ["Doanh thu xác nhận",session.confirmedSales,                          prevSession.confirmedSales,                          fmtVND],
+    ];
+    const curKey  = `${accountKey}::${session.sessionId}`;
+    const prevKey = `${accountKey}::${prevSession.sessionId}`;
+    const curClick  = clickTotals[curKey];
+    const prevClick = clickTotals[prevKey];
+    const clickReady = curClick?.state==="ok" && prevClick?.state==="ok";
+
+    return <tr>
+      <td colSpan={colSpan} style={{background:"var(--surface2)", padding:"14px 18px"}}>
+        <div style={{fontSize:11.5, color:"var(--text-muted)", marginBottom:10}}>
+          📊 So với phiên gần nhất đã kết thúc: <b style={{color:"var(--text)"}}>{prevSession.title || "Phiên live"}</b> · {fmtTime(prevSession.startTime)}
+        </div>
+        <div style={{display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:10}}>
+          {metricRows.map(([label, cur, prev, fmt]) => (
+            <div key={label} style={{background:"var(--surface)", border:"1px solid var(--border)", borderRadius:8, padding:"8px 10px"}}>
+              <div style={{fontSize:9.5, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4}}>{label}</div>
+              <div style={{display:"flex", alignItems:"baseline", gap:6, flexWrap:"wrap"}}>
+                <span style={{fontSize:14, fontWeight:700}}>{fmt(cur||0)}</span>
+                <DeltaBadge curr={cur||0} prev={prev||0}/>
+              </div>
+              <div style={{fontSize:10, color:"var(--text-muted)", marginTop:2}}>Trước: {fmt(prev||0)}</div>
+            </div>
+          ))}
+          <div style={{background:"var(--surface)", border:"1px solid var(--border)", borderRadius:8, padding:"8px 10px"}}>
+            <div style={{fontSize:9.5, color:"var(--text-muted)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:4}}>Click sản phẩm</div>
+            {clickReady ? <>
+              <div style={{display:"flex", alignItems:"baseline", gap:6, flexWrap:"wrap"}}>
+                <span style={{fontSize:14, fontWeight:700}}>{fmtNum(curClick.total)}</span>
+                <DeltaBadge curr={curClick.total} prev={prevClick.total}/>
+              </div>
+              <div style={{fontSize:10, color:"var(--text-muted)", marginTop:2}}>Trước: {fmtNum(prevClick.total)}</div>
+            </> : (!curClick && !prevClick) ? (
+              // Trường hợp phổ biến nhất: chưa phiên nào được tải (kể cả khi
+              // nó bị "mượn" làm phiên trước ở chỗ khác) — gộp lại 1 nút cho
+              // gọn, bấm 1 lần tải cả 2.
+              <button
+                className="session-products-btn"
+                onClick={() => { onLoadClick(accountKey, session.sessionId); onLoadClick(accountKey, prevSession.sessionId); }}
+              >
+                Tải số liệu click
+              </button>
+            ) : (
+              // Một trong hai bên đã có trạng thái riêng (đã tải/đang tải/lỗi
+              // từ lúc đóng vai phiên trước của một hàng so sánh khác) — tách
+              // ra 2 ô độc lập để bên còn thiếu luôn tải/thử lại được.
+              <div style={{display:"flex", flexDirection:"column", gap:5}}>
+                <ClickLoadCell label="hiện tại" state={curClick}  onLoad={()=>onLoadClick(accountKey, session.sessionId)}/>
+                <ClickLoadCell label="trước"    state={prevClick} onLoad={()=>onLoadClick(accountKey, prevSession.sessionId)}/>
+              </div>
+            )}
+          </div>
+        </div>
       </td>
     </tr>;
   }
@@ -708,9 +829,55 @@
     const [page,          setPage]          = useState(1);
     const [showAccounts,  setShowAccounts]  = useState(false);
     const [productModal,  setProductModal]  = useState(null); // { accountKey, sessionId, sessionTitle }
+    const [compareOpenKey, setCompareOpenKey] = useState(null); // `${accountKey}::${sessionId}` đang mở so sánh
+    const [clickTotals,   setClickTotals]   = useState({});    // `${accountKey}::${sessionId}` -> {state, total|error}
 
     const openProducts = useCallback((accountKey, sessionId, sessionTitle) => {
       setProductModal({ accountKey, sessionId, sessionTitle });
+    }, []);
+
+    // Với mỗi phiên, tìm phiên live GẦN NHẤT ĐÃ KẾT THÚC trước đó của CÙNG tài khoản
+    // (không phải chỉ phiên liền kề về thời gian nói chung — bỏ qua các phiên live
+    // khác đang diễn ra song song, nếu có).
+    const prevSessionByKey = useMemo(() => {
+      const map = {}; // accountKey -> Map(sessionId -> phiên trước đã kết thúc | null)
+      for (const acc of data) {
+        if (!acc.sessions?.length) continue;
+        const sorted = [...acc.sessions].sort((a,b) => (a.startTime||0) - (b.startTime||0));
+        const m = new Map();
+        let lastEnded = null;
+        for (const s of sorted) {
+          if (s.sessionId != null) m.set(s.sessionId, lastEnded);
+          if (s.status !== 1) lastEnded = s; // đã kết thúc -> trở thành "phiên trước" cho các phiên sau nó
+        }
+        map[acc.key] = m;
+      }
+      return map;
+    }, [data]);
+
+    const toggleCompare = useCallback((accountKey, session) => {
+      const key = `${accountKey}::${session.sessionId}`;
+      setCompareOpenKey(k => k === key ? null : key);
+    }, []);
+
+    // Tải số liệu click cho MỘT session duy nhất (độc lập) — key hoá theo
+    // accountKey::sessionId, giống hệt cách CompareRow đọc lại, để một
+    // session dùng làm "phiên trước" của chỗ này vẫn tải/thử lại được khi
+    // nó xuất hiện với vai trò "phiên hiện tại" ở một hàng so sánh khác.
+    const fetchClickTotal = useCallback((accountKey, sessionId) => {
+      const key = `${accountKey}::${sessionId}`;
+      setClickTotals(prev => {
+        if (prev[key] && (prev[key].state === "loading" || prev[key].state === "ok")) return prev;
+        return { ...prev, [key]: { state: "loading" } };
+      });
+      fetch(`/api/session-products?account=${encodeURIComponent(accountKey)}&sessionId=${encodeURIComponent(sessionId)}`)
+        .then(res => res.json())
+        .then(json => {
+          if (!json.success) throw new Error(json.error || "Lỗi không xác định");
+          const total = sumField(json.data || [], "productClicks");
+          setClickTotals(prev => ({ ...prev, [key]: { state: "ok", total } }));
+        })
+        .catch(e => setClickTotals(prev => ({ ...prev, [key]: { state: "error", error: e.message } })));
     }, []);
 
     const STATUS_LABEL = { all:"Tất cả", live:"Đang LIVE", done:"Đã kết thúc", notlive:"Không LIVE", live0:"LIVE 0đ", error:"Lỗi cookie" };
@@ -1034,12 +1201,22 @@
             <SortTh label="Đơn đặt"     field="placedOrders"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
             <SortTh label="Đơn XN"      field="confirmedOrders" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
             <SortTh label="Doanh thu XN" field="confirmedSales" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-            <th>Sản phẩm</th>
+            <th>Thao tác</th>
           </tr></thead>
           <tbody>
             {pageRows.length === 0
               ? <tr className="empty-row"><td colSpan={12}><span className="empty-icon">🔍</span>{hasFilters?"Không tìm thấy phiên live nào":"Chưa có dữ liệu"}</td></tr>
-              : pageRows.map(s=><SessionRow key={`${s._accountKey}-${s.sessionId}`} session={s} accountKey={s._accountKey} owner={s._owner} cart={s._cart} onOpenProducts={openProducts}/>)}
+              : pageRows.map(s=>{
+                  const cmpKey = `${s._accountKey}::${s.sessionId}`;
+                  const prevSession = prevSessionByKey[s._accountKey]?.get(s.sessionId) || null;
+                  return <React.Fragment key={`${s._accountKey}-${s.sessionId}`}>
+                    <SessionRow session={s} accountKey={s._accountKey} owner={s._owner} cart={s._cart}
+                      onOpenProducts={openProducts} onToggleCompare={toggleCompare}
+                      compareActive={compareOpenKey===cmpKey} hasPrev={!!prevSession}/>
+                    {compareOpenKey===cmpKey && <CompareRow accountKey={s._accountKey} session={s} prevSession={prevSession}
+                      colSpan={12} clickTotals={clickTotals} onLoadClick={fetchClickTotal}/>}
+                  </React.Fragment>;
+                })}
           </tbody>
         </>}
       </table></div>
