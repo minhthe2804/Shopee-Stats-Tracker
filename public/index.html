@@ -1260,6 +1260,8 @@
     const [page,          setPage]         = useState(1);
     const [showAccounts,  setShowAccounts] = useState(true);
     const [spinning,      setSpinning]     = useState(false);
+    const [sheetSyncState,setSheetSyncState] = useState("idle"); // idle | syncing | ok | err
+    const [sheetSyncMsg,  setSheetSyncMsg]   = useState("");
 
     const loadCommission = useCallback(async (d, force=false) => {
       setState("loading"); setSpinning(true); setRangeErr("");
@@ -1297,6 +1299,23 @@
       if (mode === "day") loadCommission(date);
       else if (rangeFrom && rangeTo) loadCommissionRange(rangeFrom, rangeTo);
     }, [mode, date]);
+
+    useEffect(() => { setSheetSyncState("idle"); setSheetSyncMsg(""); }, [date]);
+
+    // Đồng bộ TẤT CẢ tài khoản (của ngày `date`) lên Sheet — ghi snapshot tab HH
+    // rồi tính + đóng băng 1 cột trong tab PHỤ TRÁCH, dùng chung hàm với cron 9h sáng.
+    const handleSyncAllToSheet = async () => {
+      setSheetSyncState("syncing"); setSheetSyncMsg("");
+      try {
+        const res = await fetch(`/api/sync-sheet?date=${date}`, { method: "POST" });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setSheetSyncState("ok");
+        setSheetSyncMsg(`Đã đồng bộ ${json.phuTrach?.rows ?? 0} tài khoản lên cột ${json.dayLabel} (tab PHỤ TRÁCH)`);
+      } catch (e) {
+        setSheetSyncState("err"); setSheetSyncMsg(e.message);
+      }
+    };
 
     const applyRange = () => {
       if (!rangeFrom || !rangeTo) return;
@@ -1433,10 +1452,24 @@
         <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={refresh} style={{marginLeft:4}}>
           <IcoRefresh/> Làm mới
         </button>
+        <button
+          className="refresh-btn"
+          onClick={handleSyncAllToSheet}
+          disabled={sheetSyncState==="syncing"}
+          style={{
+            marginLeft:4,
+            borderColor: sheetSyncState==="ok" ? "var(--green)" : sheetSyncState==="err" ? "var(--red)" : "var(--orange)",
+            color:       sheetSyncState==="ok" ? "var(--green)" : sheetSyncState==="err" ? "var(--red)" : "var(--orange)",
+          }}
+          title="Lấy hoa hồng tất cả tài khoản của ngày này rồi ghi lên tab HH + PHỤ TRÁCH trên Google Sheet"
+        >
+          {sheetSyncState==="syncing" ? "Đang đồng bộ..." : sheetSyncState==="ok" ? "✅ Đã đồng bộ Sheet" : sheetSyncState==="err" ? "⚠ Lỗi đồng bộ" : "📤 Đồng bộ tất cả lên Sheet"}
+        </button>
         {fetchedAt && <span className="header-time">
           {cached && <span style={{marginRight:6,fontSize:11,background:"var(--surface2)",border:"1px solid var(--border2)",borderRadius:4,padding:"2px 6px",color:"var(--text-muted)"}}>cache</span>}
           {new Date(fetchedAt).toLocaleTimeString("vi-VN")}
         </span>}
+        {sheetSyncMsg && <span style={{fontSize:11.5, color: sheetSyncState==="err" ? "var(--red)" : "var(--text-muted)"}}>{sheetSyncMsg}</span>}
       </div> : <div className="comm-date-bar">
         <span className="comm-date-label">Từ:</span>
         <input type="date" className="date-input" value={rangeFrom} max={todayVN()} onChange={e=>setRangeFrom(e.target.value)} style={{fontSize:13, padding:"5px 12px"}}/>
@@ -1482,7 +1515,7 @@
         </div>
         <div className={`collapse-wrap ${showAccounts?"":"collapsed"}`}><div className="collapse-inner">
           <div className="cards-grid">
-            {data.map(acc=><CommAccountCard key={acc.key} account={acc} active={activeAccount===acc.key} onClick={()=>setActiveAccount(activeAccount===acc.key?"all":acc.key)}/>)}
+            {data.map(acc=><CommAccountCard key={acc.key} account={acc} active={activeAccount===acc.key} onClick={()=>setActiveAccount(activeAccount===acc.key?"all":acc.key)} date={date} canSync={mode==="day"}/>)}
           </div>
         </div></div>
 
