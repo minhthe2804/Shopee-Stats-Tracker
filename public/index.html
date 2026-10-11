@@ -1941,6 +1941,91 @@
     </div>;
   }
 
+  /* ── BÁO CÁO: ĐIỀN HOA HỒNG CÒN THIẾU CHO 1 NGÀY ──
+     Dùng khi 1 ngày đã đồng bộ nhưng vài tài khoản bị trống do cookie hết hạn
+     lúc đó. Sau khi cập nhật lại cookie: "Kiểm tra" xem còn trống những tài
+     khoản nào (không tốn request Shopee), rồi "Điền ngay" để gọi lại API CHỈ
+     cho đúng các tài khoản đó và ghi thẳng vào ô — không đụng tài khoản khác. ── */
+  function FillMissingCommissionCard() {
+    const [date, setDate] = useState(() => offsetDate(todayVN(), -1));
+    const [checking, setChecking] = useState(false);
+    const [filling, setFilling] = useState(false);
+    const [checkResult, setCheckResult] = useState(null);
+    const [fillResult, setFillResult] = useState(null);
+    const [errMsg, setErrMsg] = useState("");
+
+    const handleCheck = async () => {
+      setChecking(true); setErrMsg(""); setFillResult(null);
+      try {
+        const res = await fetch(`/api/missing-commission?date=${date}`);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setCheckResult(json);
+      } catch (e) { setErrMsg(e.message); }
+      finally { setChecking(false); }
+    };
+
+    const handleFill = async () => {
+      setFilling(true); setErrMsg("");
+      try {
+        const res = await fetch(`/api/sync-sheet-missing?date=${date}`, { method: "POST" });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setFillResult(json);
+        setCheckResult(null);
+      } catch (e) { setErrMsg(e.message); }
+      finally { setFilling(false); }
+    };
+
+    return <div className="report-section">
+      <div className="report-section-title">🔧 Điền hoa hồng còn thiếu</div>
+      <div className="report-section-sub">
+        Chọn 1 ngày ĐÃ đồng bộ nhưng còn vài tài khoản bị trống (cookie hết hạn lúc đó).
+        Sau khi cập nhật lại cookie cho các tài khoản đó, bấm "Điền ngay" — chỉ những
+        tài khoản đang trống mới được gọi lại API và ghi vào ô, các tài khoản khác giữ nguyên.
+      </div>
+      <div style={{display:"flex", gap:10, alignItems:"center", flexWrap:"wrap"}}>
+        <input type="date" className="date-input" value={date} max={todayVN()} onChange={e=>{setDate(e.target.value); setCheckResult(null); setFillResult(null); setErrMsg("");}}/>
+        <button className="refresh-btn" onClick={handleCheck} disabled={checking}>{checking ? "Đang kiểm tra..." : "🔍 Kiểm tra"}</button>
+        <button className="refresh-btn" onClick={handleFill} disabled={filling} style={{borderColor:"var(--orange)", color:"var(--orange)"}}>{filling ? "Đang điền..." : "⚡ Điền ngay"}</button>
+        {errMsg && <span style={{color:"var(--red)", fontSize:12}}>⚠ {errMsg}</span>}
+      </div>
+
+      {checkResult && <div style={{marginTop:12, fontSize:12.5, color:"var(--text-dim)", lineHeight:1.6}}>
+        {!checkResult.found
+          ? <>Chưa có cột ngày <b>{checkResult.dayLabel}</b> trong tab PHỤ TRÁCH — ngày này chưa từng đồng bộ.</>
+          : checkResult.count === 0
+            ? <>Ngày <b>{checkResult.dayLabel}</b> không có tài khoản nào bị trống. ✅</>
+            : <>Ngày <b>{checkResult.dayLabel}</b> đang trống <b style={{color:"var(--orange)"}}>{checkResult.count}</b> tài khoản:{" "}
+                {checkResult.accounts.slice(0,25).join(", ")}
+                {checkResult.accounts.length>25 ? `, +${checkResult.accounts.length-25} nữa...` : ""}
+                {checkResult.notFoundInFirestore?.length > 0 && <div style={{marginTop:6, color:"var(--red)"}}>
+                  ⚠ {checkResult.notFoundInFirestore.length} trong số này KHÔNG khớp được tài khoản nào trong Firestore
+                  (kể cả sau khi bỏ qua hoa/thường) — bấm "Điền ngay" sẽ không giúp được, cần kiểm tra tên tài khoản tay:{" "}
+                  {checkResult.notFoundInFirestore.join(", ")}
+                </div>}
+              </>}
+      </div>}
+
+      {fillResult && <div style={{marginTop:12, fontSize:12.5, color:"var(--text-dim)", lineHeight:1.6}}>
+        {!fillResult.found
+          ? fillResult.message
+          : fillResult.missingCount === 0
+            ? "Không có tài khoản nào bị trống ở ngày này."
+            : <>Đã gọi lại API cho <b>{fillResult.attempted}</b>/{fillResult.missingCount} tài khoản đang trống ở ngày <b>{fillResult.dayLabel}</b> →
+                điền được <b style={{color:"var(--green)"}}>{fillResult.filled}</b>,
+                còn <b style={{color:"var(--red)"}}>{fillResult.stillError}</b> vẫn lỗi cookie.
+                {fillResult.notFoundInFirestore?.length > 0 && <div style={{marginTop:4, color:"var(--red)"}}>
+                  ⚠ {fillResult.notFoundInFirestore.length} tài khoản không khớp Firestore (bỏ qua, không gọi API): {fillResult.notFoundInFirestore.join(", ")}
+                </div>}
+                {fillResult.notFoundInSheet?.length > 0 && <div style={{marginTop:4, color:"var(--red)"}}>
+                  ⚠ {fillResult.notFoundInSheet.length} tài khoản fetch xong nhưng không thấy lại trên sheet lúc ghi: {fillResult.notFoundInSheet.join(", ")}
+                </div>}
+              </>}
+      </div>}
+    </div>;
+  }
+
   function ReportsTab() {
     return <>
       <RankingCard/>
@@ -2155,6 +2240,7 @@
     const [cached,    setCached]   = useState(false);
     const [spinning,  setSpinning] = useState(false);
     const [errMsg,    setErrMsg]   = useState("");
+    const [missingBadge, setMissingBadge] = useState(null); // số tài khoản đang trống hoa hồng của ngày hôm qua
 
     const loadStats = useCallback(async (force=false) => {
       setState(s=>s==="ok"?"ok":"loading"); setSpinning(true);
@@ -2168,6 +2254,18 @@
     }, []);
 
     useEffect(() => { loadStats(); }, []);
+
+    // Báo hiệu nhẹ trên tab "Điền Hoa Hồng Còn Thiếu": ngày hôm qua (ngày cron vừa đồng bộ
+    // sáng nay) còn đang trống bao nhiêu tài khoản — không gọi API Shopee, chỉ
+    // đọc sheet, nên không tốn chi phí. Lỗi (vd chưa có cột ngày đó) thì im lặng
+    // bỏ qua, không ảnh hưởng phần còn lại của dashboard.
+    useEffect(() => {
+      const yesterday = offsetDate(todayVN(), -1);
+      fetch(`/api/missing-commission?date=${yesterday}`)
+        .then(r => r.json())
+        .then(json => { if (json.success && json.found) setMissingBadge(json.count); })
+        .catch(() => {});
+    }, []);
 
     if (state==="loading") return <div className="state-center"><div className="spinner"/><div style={{color:"var(--text-muted)",fontSize:13}}>Đang tải dữ liệu...</div></div>;
     if (state==="error")   return <div className="state-center"><div style={{fontSize:36}}>⚠️</div><div style={{fontWeight:700}}>Không kết nối được server</div><div style={{color:"var(--text-muted)",fontSize:12}}>{errMsg}</div><button className="refresh-btn" onClick={()=>loadStats()} style={{marginTop:8}}><IcoRefresh/> Thử lại</button></div>;
@@ -2204,13 +2302,18 @@
         <button className={`tab-btn ${tab==="livecart"?"active":""}`} onClick={()=>setTab("livecart")}>
           <span className="tab-icon">🛒</span> Giỏ Hàng Live
         </button>
+        <button className={`tab-btn ${tab==="fillmissing"?"active":""}`} onClick={()=>setTab("fillmissing")}>
+          <span className="tab-icon">🩹</span> Điền Hoa Hồng Còn Thiếu
+          {missingBadge>0&&<span style={{background:"var(--red)",color:"#fff",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:700}}>{missingBadge}</span>}
+        </button>
       </div>
 
       <div className="main">
-        {tab==="live"       && <LiveTab data={data}/>}
-        {tab==="commission" && <CommissionTab/>}
-        {tab==="reports"    && <ReportsTab/>}
-        {tab==="livecart"   && <LiveCartTab/>}
+        {tab==="live"        && <LiveTab data={data}/>}
+        {tab==="commission"  && <CommissionTab/>}
+        {tab==="reports"     && <ReportsTab/>}
+        {tab==="livecart"    && <LiveCartTab/>}
+        {tab==="fillmissing" && <FillMissingCommissionCard/>}
       </div>
     </>;
   }

@@ -346,3 +346,117 @@ export async function readPhuTrachHistory(
 
     return { days: selected.map((d) => d.label), accounts: accountRows, matrix };
 }
+
+// ── Điền hoa hồng CÒN THIẾU cho 1 ngày đã đồng bộ ───────────────────────────
+// Khác với syncCommissionToPhuTrachSheet (ghi đè TOÀN BỘ cột của 1 ngày),
+// 2 hàm dưới đây chỉ động tới đúng những ô đang TRỐNG — dùng khi ngày đó đã
+// chạy đồng bộ xong nhưng một số tài khoản bị trống do cookie hết hạn tại
+// thời điểm đó; sau khi cập nhật cookie, gọi lại CHỈ cho các tài khoản này.
+
+// Tìm cột của 1 ngày (dayLabel dạng "dd.mm") đã tồn tại sẵn trong tab PHỤ TRÁCH.
+// Trả về null nếu cột đó chưa từng được tạo (ngày đó chưa được đồng bộ lần nào).
+async function findDayColumn(sheets, tabName, dayLabel, accountHeader, anchorHeader) {
+    const row1Res = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: `${tabName}!1:1` });
+    const row1Values = row1Res.data.values?.[0] || [];
+    const accountColIdx0 = row1Values.findIndex((h) => (h || "").trim() === accountHeader);
+    if (accountColIdx0 === -1) throw new Error(`Không tìm thấy cột "${accountHeader}" trong tab "${tabName}"`);
+    const target = extractDayMonth(dayLabel);
+    if (!target) throw new Error(`dayLabel không hợp lệ: "${dayLabel}"`);
+
+    let colIdx0 = -1;
+    for (let i = 0; i < row1Values.length; i++) {
+        if (i === accountColIdx0) continue;
+        if (anchorHeader && (row1Values[i] || "").trim() === anchorHeader) continue;
+        const parsed = extractDayMonth(row1Values[i]);
+        if (!parsed) continue;
+        const sameDay = parsed.day === target.day;
+        const sameMonth = parsed.month == null || target.month == null || parsed.month === target.month;
+        if (sameDay && sameMonth) { colIdx0 = i; break; }
+    }
+    if (colIdx0 === -1) return null;
+    return { accountColLetter: colLetter(accountColIdx0 + 1), dayColLetter: colLetter(colIdx0 + 1) };
+}
+
+/**
+ * Tìm những tài khoản đang bị TRỐNG hoa hồng ở cột ngày `dayLabel` trong tab
+ * PHỤ TRÁCH (ô trống do cookie lỗi lúc đồng bộ, hoặc do bị isErrorValue() xoá
+ * trống ở syncCommissionToPhuTrachSheet) — để biết cần gọi lại API Shopee cho
+ * đúng những tài khoản nào, thay vì toàn bộ danh sách.
+ *
+ * @param {string} dayLabel - "dd.mm", vd "09.10"
+ * @returns {null | {dayColumn:string, accounts:string[]}} null nếu ngày đó
+ *          chưa từng được đồng bộ (chưa có cột trong sheet)
+ */
+export async function getMissingCommissionAccounts(
+    dayLabel, tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "Tổng"
+) {
+    const sheets = await getSheets();
+    const loc = await findDayColumn(sheets, tabName, dayLabel, accountHeader, anchorHeader);
+    if (!loc) return null;
+
+    const { accountColLetter, dayColLetter } = loc;
+    const accountColRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID, range: `${tabName}!${accountColLetter}2:${accountColLetter}`,
+    });
+    const accountRows = accountColRes.data.values || [];
+    if (accountRows.length === 0) return { dayColumn: dayColLetter, accounts: [] };
+    const lastRow = 1 + accountRows.length;
+
+    const dayColRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID, range: `${tabName}!${dayColLetter}2:${dayColLetter}${lastRow}`,
+    });
+    const dayValues = dayColRes.data.values || [];
+
+    const accounts = [];
+    for (let i = 0; i < accountRows.length; i++) {
+        const account = (accountRows[i]?.[0] || "").trim();
+        if (!account || isPlaceholderAccountValue(account)) continue; // dòng trống/placeholder, bỏ qua
+        const cell = dayValues[i]?.[0];
+        const isEmpty = cell === undefined || cell === null || String(cell).trim() === "";
+        if (isEmpty) accounts.push(account);
+    }
+    return { dayColumn: dayColLetter, accounts };
+}
+
+/**
+ * Điền hoa hồng CHỈ cho những tài khoản có mặt trong `valuesByAccount`, vào
+ * cột ngày `dayLabel` ĐÃ CÓ SẴN trong tab PHỤ TRÁCH — các ô của tài khoản
+ * KHÔNG nằm trong valuesByAccount được giữ nguyên, không đụng tới.
+ *
+ * @param {string} dayLabel
+ * @param {Record<string, number>} valuesByAccount - key: account, value: số hoa hồng
+ * @returns {{filled:number, notFoundInSheet:string[]}} notFoundInSheet: những
+ *          account trong valuesByAccount nhưng không thấy ở cột ACCOUNT của sheet
+ */
+export async function fillMissingCommissionValues(
+    dayLabel, valuesByAccount, tabName = "PHỤ TRÁCH", accountHeader = "ACCOUNT", anchorHeader = "Tổng"
+) {
+    const sheets = await getSheets();
+    const loc = await findDayColumn(sheets, tabName, dayLabel, accountHeader, anchorHeader);
+    if (!loc) throw new Error(`Chưa có cột ngày "${dayLabel}" trong tab "${tabName}" — cần chạy đồng bộ đầy đủ cho ngày đó trước`);
+
+    const { accountColLetter, dayColLetter } = loc;
+    const accountColRes = await sheets.spreadsheets.values.get({
+        spreadsheetId: SPREADSHEET_ID, range: `${tabName}!${accountColLetter}2:${accountColLetter}`,
+    });
+    const accountRows = accountColRes.data.values || [];
+
+    const remaining = new Set(Object.keys(valuesByAccount));
+    const data = [];
+    for (let i = 0; i < accountRows.length; i++) {
+        const account = (accountRows[i]?.[0] || "").trim();
+        if (!account || !(account in valuesByAccount)) continue;
+        const rowNum = i + 2;
+        const raw = valuesByAccount[account];
+        const val = isErrorValue(raw) ? "" : raw; // phòng hờ, không nên xảy ra vì caller chỉ truyền số thành công
+        data.push({ range: `${tabName}!${dayColLetter}${rowNum}`, values: [[val]] });
+        remaining.delete(account);
+    }
+    if (data.length > 0) {
+        await sheets.spreadsheets.values.batchUpdate({
+            spreadsheetId: SPREADSHEET_ID,
+            requestBody: { valueInputOption: "USER_ENTERED", data },
+        });
+    }
+    return { filled: data.length, notFoundInSheet: [...remaining] };
+}

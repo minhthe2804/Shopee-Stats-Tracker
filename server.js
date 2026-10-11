@@ -8,7 +8,7 @@ import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDo
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
-import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory, readOwnersFromSheet } from "./sheetSync.js";
+import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory, readOwnersFromSheet, getMissingCommissionAccounts, fillMissingCommissionValues } from "./sheetSync.js";
 import { LiveCart, connectLiveCartDb, isLiveCartDbConnected } from "./liveCartModel.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -878,6 +878,112 @@ app.post("/api/sync-sheet", async (req, res) => {
         res.json({ success: true, ...result });
     } catch (err) {
         console.error("❌ Lỗi đồng bộ Sheet (thủ công):", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── Điền hoa hồng CÒN THIẾU cho 1 ngày cụ thể ───────────────────────────────
+// Khác với runDailySheetSync (gọi API Shopee cho TOÀN BỘ tài khoản rồi ghi đè
+// toàn bộ cột của 1 ngày), hàm này dùng khi 1 ngày ĐÃ đồng bộ xong nhưng một
+// vài tài khoản bị trống (cookie hết hạn lúc đó) — sau khi người dùng cập
+// nhật lại cookie, chỉ gọi lại API Shopee cho ĐÚNG những tài khoản đang
+// trống ở cột ngày đó, rồi điền thẳng vào các ô đó — không đụng tới các tài
+// khoản khác đã có số liệu.
+async function runMissingCommissionSync(dateStr) {
+    if (!dateStr) throw new Error("Thiếu tham số date (dạng yyyy-mm-dd)");
+    const dayLabel = formatDayLabel(dateStr);
+
+    const missing = await getMissingCommissionAccounts(dayLabel);
+    if (!missing) {
+        return { date: dateStr, dayLabel, found: false, message: `Chưa có cột ngày ${dayLabel} trong tab PHỤ TRÁCH — cần đồng bộ đầy đủ ngày đó trước (POST /api/sync-sheet)` };
+    }
+    if (missing.accounts.length === 0) {
+        return { date: dateStr, dayLabel, found: true, missingCount: 0, attempted: 0, filled: 0, stillError: 0, message: "Không có tài khoản nào bị trống ở ngày này" };
+    }
+
+    const { start, end } = dayRange(dateStr);
+    const allAccounts = await getAccountsFromFirestore();
+
+    // QUAN TRỌNG: khớp account giữa sheet và Firestore theo kiểu CHUẨN HOÁ
+    // (bỏ khoảng trắng thừa + không phân biệt hoa/thường) — giống hệt cách
+    // getOwner() đang làm, vì sheet & Firestore hay lệch kiểu viết hoa/thường.
+    // Nếu so khớp chính xác từng ký tự, một tài khoản lệch case sẽ bị bỏ sót
+    // âm thầm (không fetch, không điền, không báo lỗi).
+    const byNormKey = new Map();
+    for (const a of allAccounts) byNormKey.set(normKey(a.key), a);
+
+    const targets = []; // [{ firestoreAccount, sheetAccount }]
+    const notFoundInFirestore = []; // account đang trống trên sheet nhưng không có trong Firestore (kể cả lệch case)
+    for (const sheetAccount of missing.accounts) {
+        const match = byNormKey.get(normKey(sheetAccount));
+        if (match) targets.push({ firestoreAccount: match, sheetAccount });
+        else notFoundInFirestore.push(sheetAccount);
+    }
+
+    console.log(`🔄 [Điền thiếu] Ngày ${dayLabel}: đang trống ${missing.accounts.length} tài khoản, khớp được ${targets.length} với Firestore (${notFoundInFirestore.length} không khớp)...`);
+    const settled = await runPool(targets, (t) => fetchAccountCommission(t.firestoreAccount, start, end), CONCURRENCY, commBackoff);
+
+    // Ghi theo ĐÚNG chuỗi account như trên sheet (sheetAccount), không phải
+    // theo key trong Firestore (có thể lệch case) — để fillMissingCommissionValues
+    // (so khớp lại với cột ACCOUNT trên sheet) tìm đúng dòng cần điền.
+    const valuesByAccount = {};
+    let stillError = 0;
+    for (let i = 0; i < settled.length; i++) {
+        const r = settled[i];
+        const sheetAccount = targets[i].sheetAccount;
+        if (!r || r.error) { stillError++; continue; } // vẫn lỗi (cookie chưa cập nhật xong) → giữ trống, không ghi gì cả
+        valuesByAccount[sheetAccount] = r.commissionLive ?? 0;
+    }
+
+    const { filled, notFoundInSheet } = await fillMissingCommissionValues(dayLabel, valuesByAccount);
+    console.log(`✅ [Điền thiếu] Ngày ${dayLabel}: điền được ${filled}/${missing.accounts.length}, còn ${stillError} vẫn lỗi, ${notFoundInFirestore.length} không khớp Firestore`);
+
+    return {
+        date: dateStr, dayLabel, found: true,
+        missingCount: missing.accounts.length,
+        attempted: targets.length,
+        filled, stillError,
+        notFoundInFirestore, // tài khoản trống trên sheet nhưng không khớp được account nào trong Firestore (kể cả sau khi chuẩn hoá) — có thể đã bị xoá/đổi tên hẳn, cần kiểm tra tay
+        notFoundInSheet, // trường hợp hiếm: account fetch thành công nhưng lúc ghi lại không còn thấy trên sheet (sheet vừa bị sửa cấu trúc giữa chừng)
+    };
+}
+
+// Kiểm tra trước (không gọi API Shopee): ngày này đang trống những tài khoản nào?
+// GET /api/missing-commission?date=2026-10-09
+app.get("/api/missing-commission", async (req, res) => {
+    try {
+        const { date } = req.query;
+        if (!date) return res.status(400).json({ success: false, error: "Thiếu tham số date (dạng yyyy-mm-dd)" });
+        const dayLabel = formatDayLabel(date);
+        const missing = await getMissingCommissionAccounts(dayLabel);
+        if (!missing) return res.json({ success: true, date, dayLabel, found: false, count: 0, accounts: [] });
+
+        // Kiểm luôn xem account nào trong số này KHÔNG khớp được với Firestore
+        // (dù đã chuẩn hoá hoa/thường + khoảng trắng) — để biết trước account
+        // nào gọi "Điền ngay" cũng sẽ không giúp được gì (cần sửa tay).
+        const allAccounts = await getAccountsFromFirestore();
+        const normSet = new Set(allAccounts.map((a) => normKey(a.key)));
+        const notFoundInFirestore = missing.accounts.filter((acc) => !normSet.has(normKey(acc)));
+
+        res.json({
+            success: true, date, dayLabel, found: true,
+            count: missing.accounts.length,
+            accounts: missing.accounts,
+            notFoundInFirestore,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Điền hoa hồng còn thiếu — POST /api/sync-sheet-missing?date=2026-10-09
+app.post("/api/sync-sheet-missing", async (req, res) => {
+    try {
+        const result = await runMissingCommissionSync(req.query.date);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        console.error("❌ Lỗi điền hoa hồng còn thiếu:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
