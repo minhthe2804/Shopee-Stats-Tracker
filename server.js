@@ -48,10 +48,17 @@ if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && L
     console.warn("⚠️  Thiếu SMTP_HOST/SMTP_USER/SMTP_PASS/ALERT_EMAIL_TO — tính năng cảnh báo live sắp 24h sẽ không hoạt động");
 }
 
-// key = `${accountKey}__${sessionId}` của các phiên ĐÃ gửi cảnh báo — chặn gửi
-// trùng nhiều lần cho cùng 1 phiên. Chỉ ở trong RAM (mất khi restart server),
-// chấp nhận được vì trong trường hợp hiếm đó chỉ gửi lại tối đa 1 lần nữa.
+// key = `${accountKey}__${sessionId}` của các phiên ĐÃ gửi cảnh báo quá giờ —
+// chặn gửi trùng nhiều lần cho cùng 1 phiên. Chỉ ở trong RAM (mất khi restart
+// server), chấp nhận được vì trong trường hợp hiếm đó chỉ gửi lại tối đa 1 lần.
 const liveAlertSent = new Set();
+
+// alertKey -> {account, owner, title, startMs} của các phiên ĐANG live ở lần
+// quét TRƯỚC — dùng để so sánh với lần quét hiện tại, phát hiện phiên nào vừa
+// kết thúc (biến mất khỏi danh sách live) để báo "vừa xuống live". Cũng chỉ ở
+// RAM — sau khi restart server, lần quét đầu tiên sẽ không báo "vừa xuống live"
+// cho phiên nào (vì chưa có dữ liệu lần trước để so sánh), chỉ từ lần quét thứ 2 trở đi.
+let previousLiveMap = new Map();
 
 function fmtHM(ms) {
     const h = Math.floor(ms / 3_600_000), m = Math.floor((ms % 3_600_000) / 60_000);
@@ -66,8 +73,8 @@ async function checkLiveAlerts() {
     const now      = Date.now();
     const thresholdMs = LIVE_ALERT_HOURS * 3_600_000;
 
-    const stillLiveKeys = new Set(); // phiên nào vẫn đang live ở lần quét này
-    const toAlert = [];
+    const currentLiveMap = new Map(); // alertKey -> info, các phiên ĐANG live ở lần quét này
+    const toAlert = []; // phiên vượt ngưỡng LIVE_ALERT_HOURS
 
     for (const r of settled) {
         if (!r || r.error) continue;
@@ -76,12 +83,13 @@ async function checkLiveAlerts() {
         for (const s of r.sessions || []) {
             if (s.status !== 1 || !s.startTime) continue; // chỉ xét phiên ĐANG live
             const alertKey = `${r.key}__${s.sessionId || s.id || s.startTime}`;
-            stillLiveKeys.add(alertKey);
-
             const startMs = s.startTime < 1e12 ? s.startTime * 1000 : s.startTime;
+            const info = { account: r.key, owner, title: s.title || "Phiên live", startMs };
+            currentLiveMap.set(alertKey, info);
+
             const elapsedMs = now - startMs;
             if (elapsedMs >= thresholdMs && !liveAlertSent.has(alertKey)) {
-                toAlert.push({ account: r.key, owner, title: s.title || "Phiên live", elapsedMs });
+                toAlert.push({ ...info, elapsedMs });
                 liveAlertSent.add(alertKey);
             }
         }
@@ -90,23 +98,47 @@ async function checkLiveAlerts() {
     // Dọn các key không còn đang live nữa (phiên đã kết thúc) để nếu tài khoản
     // đó mở phiên MỚI sau này và lại chạm ngưỡng thì vẫn được báo lại.
     for (const key of liveAlertSent) {
-        if (!stillLiveKeys.has(key)) liveAlertSent.delete(key);
+        if (!currentLiveMap.has(key)) liveAlertSent.delete(key);
     }
 
-    if (!toAlert.length) return;
+    // Phiên nào có ở lần quét TRƯỚC nhưng không còn ở lần quét này -> vừa kết
+    // thúc live (rớt live/chủ động tắt live) giữa 2 lần quét (tối đa 10 phút trễ).
+    const justEnded = [];
+    for (const [key, info] of previousLiveMap) {
+        if (!currentLiveMap.has(key)) {
+            justEnded.push({ ...info, elapsedMs: now - info.startMs });
+        }
+    }
+    previousLiveMap = currentLiveMap;
 
-    const rows = toAlert
-        .map(a => `• ${a.account}${a.owner ? ` (${a.owner})` : ""} — "${a.title}" — đã live ${fmtHM(a.elapsedMs)}`)
-        .join("\n");
+    if (!toAlert.length && !justEnded.length) return;
+
+    const sections = [];
+    if (toAlert.length) {
+        const rows = toAlert
+            .map(a => `• ${a.account}${a.owner ? ` (${a.owner})` : ""} — "${a.title}" — đã live ${fmtHM(a.elapsedMs)}`)
+            .join("\n");
+        sections.push(`⚠️ ${toAlert.length} tài khoản live liên tục quá ${LIVE_ALERT_HOURS} giờ:\n\n${rows}`);
+    }
+    if (justEnded.length) {
+        const rows = justEnded
+            .map(a => `• ${a.account}${a.owner ? ` (${a.owner})` : ""} — "${a.title}" — vừa xuống live, đã live được ${fmtHM(a.elapsedMs)}`)
+            .join("\n");
+        sections.push(`🔴 ${justEnded.length} tài khoản vừa xuống live:\n\n${rows}`);
+    }
+
+    const subjectParts = [];
+    if (toAlert.length) subjectParts.push(`${toAlert.length} quá ${LIVE_ALERT_HOURS}h`);
+    if (justEnded.length) subjectParts.push(`${justEnded.length} vừa xuống live`);
 
     try {
         await mailTransporter.sendMail({
             from: process.env.SMTP_FROM || process.env.SMTP_USER,
             to: LIVE_ALERT_TO.join(","),
-            subject: `⚠️ ${toAlert.length} tài khoản live sắp/đã quá ${LIVE_ALERT_HOURS}h`,
-            text: `Các tài khoản sau đang live liên tục quá ${LIVE_ALERT_HOURS} giờ:\n\n${rows}`,
+            subject: `⚠️ Cảnh báo live: ${subjectParts.join(", ")}`,
+            text: sections.join("\n\n──────────\n\n"),
         });
-        console.log(`📧 Đã gửi cảnh báo live ${LIVE_ALERT_HOURS}h cho ${toAlert.length} tài khoản: ${toAlert.map(a=>a.account).join(", ")}`);
+        console.log(`📧 Đã gửi mail: ${toAlert.length} quá giờ (${toAlert.map(a=>a.account).join(", ")}), ${justEnded.length} vừa xuống live (${justEnded.map(a=>a.account).join(", ")})`);
     } catch (err) {
         console.error("❌ Lỗi gửi mail cảnh báo live:", err.message);
     }
