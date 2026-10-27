@@ -1263,6 +1263,33 @@
     const [sheetSyncState,setSheetSyncState] = useState("idle"); // idle | syncing | ok | err
     const [sheetSyncMsg,  setSheetSyncMsg]   = useState("");
 
+    // ── Bảng "Theo ngày" (tài khoản × ngày, giống cột trên Sheet) ────────────
+    const [viewMode,      setViewMode]      = useState("orders"); // "orders" | "matrix" — chỉ áp dụng khi mode==="range"
+    const [matrixState,   setMatrixState]   = useState("idle");
+    const [matrixDays,    setMatrixDays]    = useState([]);
+    const [matrixAccounts,setMatrixAccounts]= useState([]);
+    const [matrixErr,     setMatrixErr]     = useState("");
+    const [matrixSpinning,setMatrixSpinning]= useState(false);
+    const [matrixSortField, setMatrixSortField] = useState("total"); // "total" | "account"
+
+    const loadMatrix = useCallback(async (from, to, force=false) => {
+      setMatrixState("loading"); setMatrixSpinning(true); setMatrixErr("");
+      try {
+        const url = `/api/commission-matrix?from=${from}&to=${to}${force?"&refresh=1":""}`;
+        const res  = await fetch(url);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setMatrixDays(json.days || []);
+        setMatrixAccounts(json.accounts || []);
+        setMatrixState("ok");
+      } catch(e) { setMatrixState("error"); setMatrixErr(e.message); }
+      finally { setMatrixSpinning(false); }
+    }, []);
+
+    // Khoảng ngày đang hiệu lực cho bảng "Theo ngày": ở chế độ "Ngày" là chính
+    // ngày đó (from=to=date), ở chế độ "Khoảng thời gian" là rangeFrom→rangeTo.
+    const matrixRange = () => mode === "day" ? [date, date] : [rangeFrom, rangeTo];
+
     const loadCommission = useCallback(async (d, force=false) => {
       setState("loading"); setSpinning(true); setRangeErr("");
       try {
@@ -1296,8 +1323,12 @@
     }, []);
 
     useEffect(() => {
-      if (mode === "day") loadCommission(date);
-      else if (rangeFrom && rangeTo) loadCommissionRange(rangeFrom, rangeTo);
+      if (mode === "day") {
+        loadCommission(date);
+        if (viewMode === "matrix") loadMatrix(date, date);
+      } else if (rangeFrom && rangeTo) {
+        loadCommissionRange(rangeFrom, rangeTo);
+      }
     }, [mode, date]);
 
     useEffect(() => { setSheetSyncState("idle"); setSheetSyncMsg(""); }, [date]);
@@ -1321,15 +1352,28 @@
       if (!rangeFrom || !rangeTo) return;
       if (rangeFrom > rangeTo) { setRangeErr("Ngày bắt đầu phải trước ngày kết thúc"); return; }
       loadCommissionRange(rangeFrom, rangeTo);
+      if (viewMode === "matrix") loadMatrix(rangeFrom, rangeTo);
     };
 
     const refresh = () => {
-      if (mode === "day") loadCommission(date, true);
-      else applyRangeForce();
+      if (mode === "day") {
+        loadCommission(date, true);
+        if (viewMode === "matrix") loadMatrix(date, date, true);
+      } else {
+        applyRangeForce();
+        if (viewMode === "matrix" && rangeFrom && rangeTo && rangeFrom <= rangeTo) loadMatrix(rangeFrom, rangeTo, true);
+      }
     };
     const applyRangeForce = () => {
       if (!rangeFrom || !rangeTo || rangeFrom > rangeTo) return;
       loadCommissionRange(rangeFrom, rangeTo, true);
+    };
+
+    // Bật bảng "Theo ngày" — tải lần đầu nếu chưa có dữ liệu cho khoảng ngày hiện tại
+    const switchToMatrix = () => {
+      setViewMode("matrix");
+      const [from, to] = matrixRange();
+      if (from && to && from <= to && matrixState === "idle") loadMatrix(from, to);
     };
 
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
@@ -1434,6 +1478,34 @@
 
     const isToday = date === todayVN();
 
+    // ── Dữ liệu cho bảng "Theo ngày" (tài khoản × ngày) ─────────────────────
+    const matrixMetricField = sourceFilter==="live" ? "commissionLive" : sourceFilter==="video" ? "commissionVideo" : sourceFilter==="other" ? "commissionOther" : "commission";
+    const matrixMetricLabel = sourceFilter==="live" ? "Live" : sourceFilter==="video" ? "Video" : sourceFilter==="other" ? "Khác" : "Tất cả";
+
+    const matrixRows = useMemo(() => {
+      let list = matrixAccounts;
+      if (activeAccount !== "all")    list = list.filter(a => a.key === activeAccount);
+      if (ownerFilter !== "all")      list = list.filter(a => a.owner === ownerFilter);
+      if (ownerVideoFilter !== "all") list = list.filter(a => a.ownerVideo === ownerVideoFilter);
+      if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); list = list.filter(a=>a.key.toLowerCase().includes(q)); }
+
+      const withTotals = list.map(a => {
+        let total = 0, errorDays = 0;
+        for (const d of matrixDays) {
+          const cell = a.byDay[d];
+          if (!cell) continue;
+          if (cell.error) { errorDays++; continue; }
+          total += cell[matrixMetricField] || 0;
+        }
+        return { ...a, _total: total, _errorDays: errorDays };
+      });
+      return matrixSortField === "account"
+        ? withTotals.sort((x,y) => x.key.localeCompare(y.key))
+        : withTotals.sort((x,y) => y._total - x._total);
+    }, [matrixAccounts, matrixDays, activeAccount, ownerFilter, ownerVideoFilter, searchQ, matrixMetricField, matrixSortField]);
+
+    const matrixGrandTotal = useMemo(() => matrixRows.reduce((s,r)=>s+r._total,0), [matrixRows]);
+
     return <>
       {/* MODE TOGGLE */}
       <div className="comm-date-bar">
@@ -1486,6 +1558,13 @@
         {rangeErr && <span style={{color:"var(--red)", fontSize:12}}>⚠ {rangeErr}</span>}
       </div>}
 
+      {/* VIEW TOGGLE — ở chế độ "Ngày", bảng theo ngày chỉ có 1 cột (chính ngày đó) */}
+      <div className="comm-date-bar">
+        <span className="comm-date-label">Hiển thị:</span>
+        <button className={`pill ${viewMode==="orders"?"active":""}`} onClick={()=>setViewMode("orders")}>Danh sách đơn hàng</button>
+        <button className={`pill ${viewMode==="matrix"?"active":""}`} onClick={switchToMatrix}>📊 Bảng theo ngày (từng tài khoản)</button>
+      </div>
+
       {/* SUMMARY */}
       <div className="summary-bar summary-bar-7">
         <div className="summary-card"><div className="summary-card-label">Hoa hồng (tất cả TK)</div><div className="summary-card-value yellow">{fmtVND(summary.totalComm)}</div><div className="summary-card-sub">chưa trừ huỷ</div></div>
@@ -1520,7 +1599,7 @@
         </div></div>
 
         {/* TOOLBAR */}
-        <div className="section-header"><div className="section-label">Chi tiết đơn hàng</div><div className="section-line"/></div>
+        <div className="section-header"><div className="section-label">{viewMode==="matrix"?"Hoa hồng theo ngày":"Chi tiết đơn hàng"}</div><div className="section-line"/></div>
 
         <div className="source-tab-bar">
           {[
@@ -1564,6 +1643,7 @@
           </>}
           <div className="toolbar-divider"/>
           <div className="toolbar-divider"/>
+          {viewMode==="orders" ? <>
           <div className="filter-group">
             <span className="filter-group-label">Trạng thái:</span>
             {[["all","Tất cả"],["confirmed","Hợp lệ"],["cancelled","Đã huỷ"]].map(([v,l])=><button key={v} className={`pill ${statusFilter===v?"active":""}`} onClick={()=>setStatusFilter(v)}>{l}</button>)}
@@ -1579,7 +1659,18 @@
             </select>
             <button className="sort-dir-btn" onClick={()=>setSortDir(d=>d==="desc"?"asc":"desc")}>{sortDir==="desc"?"▼ Giảm":"▲ Tăng"}</button>
           </div>
+          </> : <div className="filter-group">
+            <span className="filter-group-label">Sắp xếp:</span>
+            <select className="sort-select" value={matrixSortField} onChange={e=>setMatrixSortField(e.target.value)}>
+              <option value="total">Tổng hoa hồng giảm dần</option>
+              <option value="account">Tên tài khoản A-Z</option>
+            </select>
+            <button className={`refresh-btn ${matrixSpinning?"spinning":""}`} onClick={()=>{ const [f,t]=matrixRange(); loadMatrix(f, t, true); }} style={{padding:"5px 10px"}}>
+              <IcoRefresh/> Làm mới
+            </button>
+          </div>}
           {(searchQ||statusFilter!=="all"||ownerFilter!=="all"||ownerVideoFilter!=="all"||sourceFilter!=="all")&&<button className="reset-btn" onClick={()=>{setSearchQ("");setStatusFilter("all");setOwnerFilter("all");setOwnerVideoFilter("all");setSourceFilter("all");}}><IcoX/> Xoá bộ lọc</button>}
+          {viewMode==="orders" ? <>
           <ExportBtn
             label={`Xuất Excel${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`}
             disabled={filtered.length===0}
@@ -1651,8 +1742,31 @@
             const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
             downloadWorkbook(sheets, `hoa-hong_tong-hop-tk${suffix}_${rangeFrom}_${rangeTo}.xlsx`);
           }}/>}
+          </> : <ExportBtn
+            label={`Xuất Excel (Theo ngày - ${matrixMetricLabel})`}
+            disabled={matrixRows.length===0}
+            onClick={()=>{
+              const rows = matrixRows.map((a,i) => {
+                const row = { "STT": i+1, "Tài khoản": a.key, "Người phụ trách": a.owner || "" };
+                for (const d of matrixDays) {
+                  const cell = a.byDay[d];
+                  row[d] = !cell ? "" : (cell.error ? cell.error : (cell[matrixMetricField] || 0));
+                }
+                row["Tổng"] = a._total;
+                return row;
+              });
+              const totalRow = { "STT": "", "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "" };
+              for (const d of matrixDays) {
+                totalRow[d] = matrixRows.reduce((s,a) => { const c=a.byDay[d]; return s + (c && !c.error ? (c[matrixMetricField]||0) : 0); }, 0);
+              }
+              totalRow["Tổng"] = matrixGrandTotal;
+              const [mFrom, mTo] = matrixRange();
+              downloadWorkbook([[`Theo ngày (${matrixMetricLabel})`, [...rows, totalRow]]], `hoa-hong_theo-ngay_${sourceFilter}_${mFrom}_${mTo}.xlsx`);
+            }}
+          />}
         </div>
 
+        {viewMode === "orders" ? <>
         <div className="result-row">
           <div className="result-count">Hiển thị <b>{pageRows.length}</b> / <b>{filtered.length}</b> đơn hàng{activeAccount!=="all"&&<> · <b style={{color:"var(--orange)"}}>{activeAccount}</b></>}</div>
           {filtered.length > PAGE_SIZE && <div className="result-count" style={{marginLeft:"auto"}}>Trang {currentPage}/{totalPages}</div>}
@@ -1678,6 +1792,49 @@
           {pageButtons.map((p,i)=>{const prev=pageButtons[i-1]; return <React.Fragment key={p}>{prev&&p-prev>1&&<span style={{color:"var(--text-muted)",fontSize:12}}>…</span>}<button className={`page-btn ${p===currentPage?"active":""}`} onClick={()=>setPage(p)}>{p}</button></React.Fragment>;})}
           <button className="page-btn" onClick={()=>setPage(p=>Math.min(totalPages,p+1))} disabled={currentPage===totalPages}>›</button>
         </div>}
+        </> : <>
+        {/* BẢNG THEO NGÀY (tài khoản × ngày) */}
+        {matrixState === "loading" && <div className="state-center" style={{height:200}}>
+          <div className="spinner"/>
+          <div style={{color:"var(--text-muted)",fontSize:13}}>Đang lấy hoa hồng từng ngày từ Shopee (có thể mất một chút thời gian với khoảng dài)...</div>
+        </div>}
+        {matrixState === "error" && <div className="state-center" style={{height:160}}>
+          <div style={{fontSize:28}}>⚠️</div>
+          <div style={{color:"var(--text-muted)",fontSize:12}}>{matrixErr}</div>
+        </div>}
+        {matrixState === "ok" && <>
+          <div className="result-row">
+            <div className="result-count">Hiển thị <b>{matrixRows.length}</b> tài khoản · {matrixDays.length} ngày ({matrixDays[0]} → {matrixDays[matrixDays.length-1]}) · Cột: <b style={{color:"var(--orange)"}}>{matrixMetricLabel}</b></div>
+            <div className="result-count" style={{marginLeft:"auto"}}>Tổng: <b style={{color:"var(--yellow)"}}>{fmtVND(matrixGrandTotal)}</b></div>
+          </div>
+          <div className="table-wrap"><table className="comm-table" style={{minWidth: 260 + matrixDays.length*78}}>
+            <thead><tr>
+              <th>#</th><th>Tài khoản</th><th>Phụ trách</th>
+              {matrixDays.map(d=><th key={d} className="right">{d.slice(5)}</th>)}
+              <th className="right">Tổng</th>
+            </tr></thead>
+            <tbody>
+              {matrixRows.length===0
+                ? <tr className="empty-row"><td colSpan={4+matrixDays.length}><span className="empty-icon">📭</span>Không có tài khoản nào khớp bộ lọc</td></tr>
+                : matrixRows.map((a,i)=>(
+                  <tr key={a.key}>
+                    <td style={{color:"var(--text-muted)"}}>{i+1}</td>
+                    <td><span className="account-tag">{a.key}</span></td>
+                    <td>{a.owner || <span style={{color:"var(--text-muted)"}}>—</span>}</td>
+                    {matrixDays.map(d=>{
+                      const cell = a.byDay[d];
+                      if (!cell) return <td key={d} className="num right" style={{color:"var(--text-muted)"}}>—</td>;
+                      if (cell.error) return <td key={d} className="num right" style={{color:"var(--red)"}} title={cell.error}>⚠</td>;
+                      const v = cell[matrixMetricField] || 0;
+                      return <td key={d} className="num right" style={{color: v>0 ? "var(--text)" : "var(--text-muted)"}}>{v>0?fmtK(v):"–"}</td>;
+                    })}
+                    <td className="num yellow big right">{fmtVND(a._total)}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table></div>
+        </>}
+        </>}
       </>}
     </>;
   }

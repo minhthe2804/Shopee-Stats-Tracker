@@ -3,6 +3,7 @@ import express from "express";
 import axios from "axios";
 import https from "https";
 import cron from "node-cron";
+import nodemailer from "nodemailer";
 import { initializeApp } from "firebase/app";
 import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDoc, where } from "firebase/firestore";
 import { fileURLToPath } from "url";
@@ -26,6 +27,101 @@ app.use(express.json());
 const LIVE_CART_TOKEN = process.env.LIVE_CART_TOKEN || "";
 
 await connectLiveCartDb();
+
+// ── Cảnh báo email khi phiên live sắp chạm 24h ───────────────────────────────
+// Cần set các biến môi trường SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
+// ALERT_EMAIL_TO. Thiếu biến nào thì tính năng tự vô hiệu (chỉ log cảnh báo
+// 1 lần lúc khởi động), không làm sập server — giống cách xử lý MONGODB_URI.
+const LIVE_ALERT_HOURS = Number(process.env.LIVE_ALERT_HOURS || 23); // ngưỡng báo (giờ)
+const LIVE_ALERT_TO    = (process.env.ALERT_EMAIL_TO || "").split(",").map(s => s.trim()).filter(Boolean);
+
+let mailTransporter = null;
+if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS && LIVE_ALERT_TO.length) {
+    mailTransporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: Number(process.env.SMTP_PORT || 587),
+        secure: process.env.SMTP_SECURE === "1", // true nếu dùng port 465
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+    console.log(`✅ Cảnh báo live ${LIVE_ALERT_HOURS}h: đã cấu hình, gửi tới ${LIVE_ALERT_TO.join(", ")}`);
+} else {
+    console.warn("⚠️  Thiếu SMTP_HOST/SMTP_USER/SMTP_PASS/ALERT_EMAIL_TO — tính năng cảnh báo live sắp 24h sẽ không hoạt động");
+}
+
+// key = `${accountKey}__${sessionId}` của các phiên ĐÃ gửi cảnh báo — chặn gửi
+// trùng nhiều lần cho cùng 1 phiên. Chỉ ở trong RAM (mất khi restart server),
+// chấp nhận được vì trong trường hợp hiếm đó chỉ gửi lại tối đa 1 lần nữa.
+const liveAlertSent = new Set();
+
+function fmtHM(ms) {
+    const h = Math.floor(ms / 3_600_000), m = Math.floor((ms % 3_600_000) / 60_000);
+    return `${h} giờ ${m} phút`;
+}
+
+async function checkLiveAlerts() {
+    if (!mailTransporter) return;
+
+    const accounts = await getAccountsFromFirestore();
+    const settled  = await runPool(accounts, fetchAccount, CONCURRENCY, statsBackoff);
+    const now      = Date.now();
+    const thresholdMs = LIVE_ALERT_HOURS * 3_600_000;
+
+    const stillLiveKeys = new Set(); // phiên nào vẫn đang live ở lần quét này
+    const toAlert = [];
+
+    for (const r of settled) {
+        if (!r || r.error) continue;
+        const owner = getOwner(r.key);
+        if (!owner) continue; // chưa có người phụ trách -> không báo
+        for (const s of r.sessions || []) {
+            if (s.status !== 1 || !s.startTime) continue; // chỉ xét phiên ĐANG live
+            const alertKey = `${r.key}__${s.sessionId || s.id || s.startTime}`;
+            stillLiveKeys.add(alertKey);
+
+            const startMs = s.startTime < 1e12 ? s.startTime * 1000 : s.startTime;
+            const elapsedMs = now - startMs;
+            if (elapsedMs >= thresholdMs && !liveAlertSent.has(alertKey)) {
+                toAlert.push({ account: r.key, owner, title: s.title || "Phiên live", elapsedMs });
+                liveAlertSent.add(alertKey);
+            }
+        }
+    }
+
+    // Dọn các key không còn đang live nữa (phiên đã kết thúc) để nếu tài khoản
+    // đó mở phiên MỚI sau này và lại chạm ngưỡng thì vẫn được báo lại.
+    for (const key of liveAlertSent) {
+        if (!stillLiveKeys.has(key)) liveAlertSent.delete(key);
+    }
+
+    if (!toAlert.length) return;
+
+    const rows = toAlert
+        .map(a => `• ${a.account}${a.owner ? ` (${a.owner})` : ""} — "${a.title}" — đã live ${fmtHM(a.elapsedMs)}`)
+        .join("\n");
+
+    try {
+        await mailTransporter.sendMail({
+            from: process.env.SMTP_FROM || process.env.SMTP_USER,
+            to: LIVE_ALERT_TO.join(","),
+            subject: `⚠️ ${toAlert.length} tài khoản live sắp/đã quá ${LIVE_ALERT_HOURS}h`,
+            text: `Các tài khoản sau đang live liên tục quá ${LIVE_ALERT_HOURS} giờ:\n\n${rows}`,
+        });
+        console.log(`📧 Đã gửi cảnh báo live ${LIVE_ALERT_HOURS}h cho ${toAlert.length} tài khoản: ${toAlert.map(a=>a.account).join(", ")}`);
+    } catch (err) {
+        console.error("❌ Lỗi gửi mail cảnh báo live:", err.message);
+    }
+}
+
+// Quét mỗi 10 phút. Có thể đổi qua biến môi trường LIVE_ALERT_CRON (cú pháp cron).
+cron.schedule(process.env.LIVE_ALERT_CRON || "*/10 * * * *", () => {
+    checkLiveAlerts().catch(err => console.error("❌ Lỗi kiểm tra cảnh báo live:", err.message));
+}, { timezone: "Asia/Ho_Chi_Minh" });
+
+// Kích hoạt thủ công để test ngay — không cần chờ chu kỳ cron.
+app.get("/api/live-alerts/test", async (req, res) => {
+    try { await checkLiveAlerts(); res.json({ success: true }); }
+    catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
 
 // ── Người phụ trách (owner) theo từng tài khoản ──────────────────────────────
 // Nguồn THẬT là tab "PHỤ TRÁCH" trên Google Sheet (cột PHỤ TRÁCH + ACCOUNT) —
@@ -830,6 +926,66 @@ app.get("/api/commission-range", async (req, res) => {
     }
 });
 
+// ── Bảng hoa hồng THEO NGÀY cho từng tài khoản (tài khoản × ngày) ───────────
+// Khác với getCommissionForRange (cộng dồn TOÀN BỘ khoảng thành 1 số/tài
+// khoản), hàm này giữ lại số liệu RIÊNG của từng ngày trong khoảng — dùng cho
+// bảng "Theo ngày" ở tab Hoa Hồng, hiển thị y hệt cấu trúc cột trên tab PHỤ
+// TRÁCH của Sheet nhưng lấy TRỰC TIẾP từ Shopee API (không qua Sheet), nên
+// luôn là số liệu mới nhất kể cả cho hôm nay. Gọi getCommissionForDate() TUẦN
+// TỰ từng ngày (không song song nhiều ngày) để không dồn quá nhiều request
+// đồng thời lên Shopee — mỗi ngày đã tự chạy CONCURRENCY request song song
+// cho các tài khoản, và vẫn tận dụng cache 60s sẵn có của từng ngày.
+async function getCommissionMatrixForDays(fromStr, toStr, force = false) {
+    const numDays = daysBetweenInclusive(fromStr, toStr);
+    if (numDays > MAX_RANGE_DAYS) {
+        throw new Error(`Khoảng thời gian tối đa ${MAX_RANGE_DAYS} ngày (đang chọn ${numDays} ngày)`);
+    }
+    const dayList = Array.from({ length: numDays }, (_, i) => addDaysStr(fromStr, i));
+
+    const accountsMap = {}; // key -> { key, owner, ownerVideo, byDay: { "yyyy-mm-dd": {...} } }
+    const ensureAccount = (key, owner, ownerVideo) => {
+        if (!accountsMap[key]) accountsMap[key] = { key, owner: owner || null, ownerVideo: ownerVideo || null, byDay: {} };
+        return accountsMap[key];
+    };
+
+    for (const day of dayList) {
+        const { data } = await getCommissionForDate(day, force);
+        for (const r of data) {
+            const acc = ensureAccount(r.key, r.owner, r.ownerVideo);
+            acc.byDay[day] = r.error
+                ? { error: r.error }
+                : {
+                    commission:      r.commission || 0,
+                    commissionLive:  r.commissionLive || 0,
+                    commissionVideo: r.commissionVideo || 0,
+                    commissionOther: r.commissionOther || 0,
+                    totalOrders:     r.totalOrders || 0,
+                };
+        }
+    }
+
+    const accounts = Object.values(accountsMap).sort((a, b) => a.key.localeCompare(b.key));
+    return { days: dayList, accounts };
+}
+
+app.get("/api/commission-matrix", async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        const force = req.query.refresh === "1";
+        if (!from || !to) {
+            return res.status(400).json({ success: false, error: "Thiếu tham số from hoặc to (dạng YYYY-MM-DD)" });
+        }
+        if (new Date(from + "T00:00:00+07:00") > new Date(to + "T00:00:00+07:00")) {
+            return res.status(400).json({ success: false, error: "Ngày bắt đầu phải trước ngày kết thúc" });
+        }
+        const { days, accounts } = await getCommissionMatrixForDays(from, to, force);
+        res.json({ success: true, from, to, days, accounts });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // ── Đồng bộ hoa hồng lên Google Sheet ────────────────────────────────────────
 // Ngày hôm qua theo GMT+7, dạng ISO (yyyy-mm-dd, dùng để gọi API) và dạng hiển
 // thị (dd/mm/yyyy, dùng làm tiêu đề cột trên Sheet).
@@ -991,17 +1147,20 @@ app.post("/api/sync-sheet-missing", async (req, res) => {
 // ── BÁO CÁO ──────────────────────────────────────────────────────────────────
 
 // Trả về thứ Hai (yyyy-mm-dd, GMT+7) của tuần chứa dateStr
-function mondayOfWeek(dateStr) {
-    const d = new Date(dateStr + "T00:00:00+07:00");
-    const dow = d.getDay(); // 0=CN..6=T7
-    const diff = dow === 0 ? -6 : 1 - dow;
-    d.setDate(d.getDate() + diff);
-    return d.toISOString().slice(0, 10);
-}
+// LƯU Ý: không dùng d.getDate()/setDate()/getDay() ở đây — các hàm đó đọc
+// theo timezone LOCAL của server (vd Render chạy UTC mặc định), không phải
+// GMT+7, nên "2026-10-26T00:00:00+07:00" (=2026-10-25 17:00 UTC) sẽ bị hiểu
+// nhầm là ngày 25 → mọi phép +N ngày bị lùi 1 ngày. Thay vào đó cộng thẳng
+// bằng mili-giây rồi quy đổi lại ngày theo GMT+7.
 function addDaysStr(dateStr, n) {
-    const d = new Date(dateStr + "T00:00:00+07:00");
-    d.setDate(d.getDate() + n);
-    return d.toISOString().slice(0, 10);
+    const instant = new Date(dateStr + "T00:00:00+07:00").getTime() + n * 86_400_000;
+    return new Date(instant + 7 * 3600_000).toISOString().slice(0, 10);
+}
+function mondayOfWeek(dateStr) {
+    const vn = new Date(new Date(dateStr + "T00:00:00+07:00").getTime() + 7 * 3600_000);
+    const dow = vn.getUTCDay(); // 0=CN..6=T7, đọc theo UTC của instant đã shift +7h = đúng thứ ở GMT+7
+    const diff = dow === 0 ? -6 : 1 - dow;
+    return addDaysStr(dateStr, diff);
 }
 
 function groupByOwner(entries) {
