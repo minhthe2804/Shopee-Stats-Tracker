@@ -781,7 +781,7 @@
   }
 
   /* ── ORDER STATUS ── */
-  const ORDER_STATUS = { 1:"Chờ xác nhận", 2:"Đã xác nhận", 3:"Đã giao", 4:"Đã huỷ", 5:"Hoàn trả" };
+  const ORDER_STATUS = { 1:"Chờ xác nhận", 2:"Đã xác nhận", 3:"Hoàn thành", 4:"Đã huỷ", 5:"Hoàn trả" };
   function OrderStatus({ status }) {
     if (status === 4) return <span className="badge-cancelled">{ORDER_STATUS[status]||status}</span>;
     if (status === 2 || status === 3) return <span className="badge-live" style={{color:"var(--green)"}}>{ORDER_STATUS[status]||status}</span>;
@@ -805,6 +805,8 @@
       <td className="num right">{fmtVND(order.itemValue)}</td>
       <td className="num yellow right">{fmtVND(order.commission)}</td>
       <td className="session-time right">{fmtTime(order.purchaseTime)}</td>
+      <td className="session-time right">{fmtTime(order.clickTime)}</td>
+      <td className="session-time right">{fmtTime(order.completeTime)}</td>
     </tr>;
   }
 
@@ -1396,6 +1398,7 @@
     // đổi tab không làm mất ngữ cảnh các filter khác đang chọn (owner, search...).
     const preSourceFiltered = useMemo(() => {
       let rows = allOrders;
+      rows = rows.filter(o => o._owner);
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
       if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
       if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
@@ -1417,6 +1420,9 @@
 
     const filtered = useMemo(() => {
       let rows = allOrders;
+      // Bỏ đơn của tài khoản chưa được gán người phụ trách — không hiển thị
+      // lẫn không xuất Excel.
+      rows = rows.filter(o => o._owner);
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
       if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
       if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
@@ -1653,6 +1659,8 @@
             <span className="filter-group-label">Sắp xếp:</span>
             <select className="sort-select" value={sortField} onChange={e=>{setSortField(e.target.value);setPage(1);}}>
               <option value="purchaseTime">Thời gian mua</option>
+              <option value="clickTime">Thời gian Click</option>
+              <option value="completeTime">Thời gian hoàn thành</option>
               <option value="commission">Hoa hồng</option>
               <option value="itemValue">Giá trị đơn</option>
               <option value="status">Trạng thái</option>
@@ -1686,6 +1694,8 @@
                 "Giá trị đơn":       o.itemValue || 0,
                 "Hoa hồng":          o.commission || 0,
                 "Thời gian mua":     fmtTime(o.purchaseTime),
+                "Thời gian Click":        fmtTime(o.clickTime),
+                "Thời gian hoàn thành":   fmtTime(o.completeTime),
               }));
               const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
               const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
@@ -1703,6 +1713,9 @@
             if (activeAccount !== "all")   list = list.filter(a=>a.key===activeAccount);
             if (ownerFilter !== "all")      list = list.filter(a=>a.owner===ownerFilter);
             if (ownerVideoFilter !== "all") list = list.filter(a=>a.ownerVideo===ownerVideoFilter);
+            // Bỏ các tài khoản chưa được gán người phụ trách — chỉ xuất acc
+            // đã có owner, nhưng vẫn phải đủ TOÀN BỘ acc của mọi người phụ trách.
+            list = list.filter(a=>a.owner);
 
             const FIELD = { all:"commission", live:"commissionLive", video:"commissionVideo", other:"commissionOther" };
             const LABEL = { all:"Tất cả",     live:"Live",           video:"Video",           other:"Khác" };
@@ -1777,11 +1790,13 @@
             <th>Tài khoản</th><th>Mã đơn</th><th>Sản phẩm</th><th>Trạng thái</th>
             <SortTh label="Giá trị đơn" field="itemValue"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
             <SortTh label="Hoa hồng"    field="commission"   sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
-            <SortTh label="Thời gian"   field="purchaseTime" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Thời gian mua"       field="purchaseTime" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Thời gian Click"     field="clickTime"    sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
+            <SortTh label="Thời gian hoàn thành" field="completeTime" sortField={sortField} sortDir={sortDir} onSort={handleSort} className="right"/>
           </tr></thead>
           <tbody>
             {pageRows.length===0
-              ? <tr className="empty-row"><td colSpan={7}><span className="empty-icon">📭</span>Không có đơn hàng nào trong {mode==="day"?"ngày này":"khoảng thời gian này"}</td></tr>
+              ? <tr className="empty-row"><td colSpan={9}><span className="empty-icon">📭</span>Không có đơn hàng nào trong {mode==="day"?"ngày này":"khoảng thời gian này"}</td></tr>
               : pageRows.map((o,i)=><OrderRow key={`${o._accountKey}-${o.orderId}-${i}`} order={o} accountKey={o._accountKey}/>)
             }
           </tbody>
@@ -2107,6 +2122,8 @@
             "Giá trị đơn":   o.itemValue || 0,
             "Hoa hồng":      o.commission || 0,
             "Thời gian mua": fmtTime(o.purchaseTime),
+            "Thời gian Click":      fmtTime(o.clickTime),
+            "Thời gian hoàn thành": fmtTime(o.completeTime),
           });
         }
         downloadWorkbook([["Tổng quan", summaryRows], ["Chi tiết đơn hàng", orderRows]], `hoa-hong_${owner}_${date}.xlsx`);
