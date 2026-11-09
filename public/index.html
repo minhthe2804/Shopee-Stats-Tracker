@@ -2551,7 +2551,14 @@
       {showCookieMgr && <div className="table-wrap" style={{marginBottom:20,padding:16}}>
         <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10}}>
           Cookie lưu riêng ở collection <code>notificationCookies</code> — KHÔNG dùng chung với collection <code>cookies</code> (creator/affiliate).
-          Mở F12 trên tab <code>shopee.vn</code> đã đăng nhập → Network → request bất kỳ tới shopee.vn → copy nguyên dòng <code>cookie:</code> trong Request Headers → dán vào đây.
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:8,padding:"10px 12px",marginBottom:12,flexWrap:"wrap"}}>
+          <a href="/downloads/Cookies_Mat_Da_Thich.rar" download className="refresh-btn" style={{textDecoration:"none"}}>⬇️ Tải extension lấy cookie</a>
+          <div style={{fontSize:11.5,color:"var(--text-muted)",lineHeight:1.6}}>
+            Giải nén → Chrome: <code>chrome://extensions</code> → bật "Chế độ dành cho nhà phát triển" → "Tải tiện ích đã giải nén" → chọn đúng thư mục vừa giải nén.<br/>
+            Cách dùng: đăng nhập <code>shopee.vn</code>, mở thêm tab <code>banhang.shopee.vn</code> (để có đủ mã <code>SPC_CDS</code>) → quay lại tab shopee.vn, bấm icon extension → "Sao chép" → dán vào ô bên dưới.
+            <br/>(Hoặc lấy tay: F12 → Network → request bất kỳ tới shopee.vn → copy dòng <code>cookie:</code> trong Request Headers.)
+          </div>
         </div>
         <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
           <input className="search-input" style={{flex:"0 0 220px"}} placeholder="Tên tài khoản (vd: thachsanh10)" value={newAccKey} onChange={e=>setNewAccKey(e.target.value)}/>
@@ -2770,7 +2777,14 @@
       {showCookieMgr && <div className="table-wrap" style={{marginBottom:20,padding:16}}>
         <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10}}>
           Cookie lưu riêng ở collection <code>violationCheckCookies</code> — KHÔNG dùng chung với <code>cookies</code> (creator/affiliate) hay <code>notificationCookies</code> (mất đã thích), vì API này cần cookie có <code>SPC_F</code> + <code>csrftoken</code>.
-          Mở F12 trên tab <code>shopee.vn</code> đã đăng nhập → Network → request bất kỳ tới shopee.vn → copy nguyên dòng <code>cookie:</code> trong Request Headers → dán vào đây.
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10,background:"var(--bg2)",border:"1px solid var(--border2)",borderRadius:8,padding:"10px 12px",marginBottom:12,flexWrap:"wrap"}}>
+          <a href="/downloads/Cookies_Gay_Vi_Pham.rar" download className="refresh-btn" style={{textDecoration:"none"}}>⬇️ Tải extension lấy cookie</a>
+          <div style={{fontSize:11.5,color:"var(--text-muted)",lineHeight:1.6}}>
+            Giải nén → Chrome: <code>chrome://extensions</code> → bật "Chế độ dành cho nhà phát triển" → "Tải tiện ích đã giải nén" → chọn đúng thư mục vừa giải nén.<br/>
+            Cách dùng: đăng nhập <code>shopee.vn</code> → bấm icon extension → chọn Việt Nam → bấm lấy/sao chép cookie → dán vào ô bên dưới.
+            <br/>(Hoặc lấy tay: F12 → Network → request bất kỳ tới shopee.vn → copy dòng <code>cookie:</code> trong Request Headers.)
+          </div>
         </div>
         <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
           <input className="search-input" style={{flex:"0 0 220px"}} placeholder="Tên tài khoản (vd: hhshop33)" value={newAccKey} onChange={e=>setNewAccKey(e.target.value)}/>
