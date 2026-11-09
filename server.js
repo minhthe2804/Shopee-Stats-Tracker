@@ -505,6 +505,25 @@ app.get("/api/notification-cookie", async (req, res) => {
     }
 });
 
+// Xoá cookie đã lưu của 1 tài khoản (vd đổi tài khoản khác, tài khoản bị khoá
+// hẳn không cần theo dõi nữa...). Để cập nhật cookie (thay vì xoá) chỉ cần
+// gọi lại POST /api/notification-cookie với cùng account — tự ghi đè.
+app.delete("/api/notification-cookie/:account", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const key = String(req.params.account || "").trim();
+        if (!key) return res.status(400).json({ success: false, error: "Thiếu account" });
+        const result = await NotificationCookie.deleteOne({ account: key });
+        if (result.deletedCount === 0) return res.status(404).json({ success: false, error: "Không tìm thấy tài khoản" });
+        res.json({ success: true, account: key });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 // LƯU Ý: request thật từ trình duyệt còn kèm af-ac-enc-dat / x-sap-sec / x-sap-ri
 // (token chống bot tự sinh bởi JS client) — nếu Shopee bắt đầu chặn (403/lỗi
 // lạ) khi THIẾU các header này thì gọi trực tiếp bằng axios sẽ không khả thi nữa.
@@ -663,6 +682,24 @@ app.get("/api/violation-cookie", async (req, res) => {
             accounts: list.map((d) => ({ account: d.account, owner: getOwner(d.account), updatedAt: d.updatedAt })),
         });
     } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Xoá cookie kiểm tra gậy đã lưu của 1 tài khoản. Để cập nhật, gọi lại
+// POST /api/violation-cookie với cùng account — tự ghi đè, không cần xoá trước.
+app.delete("/api/violation-cookie/:account", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const key = String(req.params.account || "").trim();
+        if (!key) return res.status(400).json({ success: false, error: "Thiếu account" });
+        const result = await ViolationCookie.deleteOne({ account: key });
+        if (result.deletedCount === 0) return res.status(404).json({ success: false, error: "Không tìm thấy tài khoản" });
+        res.json({ success: true, account: key });
+    } catch (err) {
+        console.error(err);
         res.status(500).json({ success: false, error: err.message });
     }
 });
