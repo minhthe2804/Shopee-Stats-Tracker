@@ -476,12 +476,25 @@ app.post("/api/notification-cookie", async (req, res) => {
         if (!cookie || !String(cookie).trim()) return res.status(400).json({ success: false, error: "Thiếu cookie" });
 
         const key = String(account).trim();
+        const trimmedCookie = String(cookie).trim();
         await NotificationCookie.findOneAndUpdate(
             { account: key },
-            { account: key, cookie: String(cookie).trim(), updatedAt: new Date().toISOString() },
+            { account: key, cookie: trimmedCookie, updatedAt: new Date().toISOString() },
             { upsert: true, new: true, setDefaultsOnInsert: true }
         );
-        res.json({ success: true, account: key });
+
+        // Lưu xong kiểm tra NGAY tài khoản vừa lưu/cập nhật (dù là cookie mới hay
+        // sửa cookie cũ) — để người dùng biết liền cookie có dùng được không và
+        // tài khoản có đang mất "Đã Thích" hay không, không cần đợi vòng quét kế
+        // tiếp hay bấm "Quét lại" thủ công.
+        const r = await fetchAccountNotifications(key, trimmedCookie);
+        const check = {
+            key,
+            owner: getOwner(key),
+            error: r.error,
+            authLoss: r.error ? null : findAuthLossNotice(r.notis),
+        };
+        res.json({ success: true, account: key, check });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.message });
@@ -658,12 +671,27 @@ app.post("/api/violation-cookie", async (req, res) => {
         if (!cookie || !String(cookie).trim()) return res.status(400).json({ success: false, error: "Thiếu cookie" });
 
         const key = String(account).trim();
+        const trimmedCookie = String(cookie).trim();
         await ViolationCookie.findOneAndUpdate(
             { account: key },
-            { account: key, cookie: String(cookie).trim(), updatedAt: new Date().toISOString() },
+            { account: key, cookie: trimmedCookie, updatedAt: new Date().toISOString() },
             { upsert: true, new: true, setDefaultsOnInsert: true }
         );
-        res.json({ success: true, account: key });
+
+        // Lưu xong kiểm tra gậy vi phạm NGAY cho tài khoản vừa lưu/cập nhật —
+        // để biết liền cookie dùng được không và điểm phạt hiện tại, không cần
+        // đợi vòng quét 60s cache hay bấm "Quét lại" thủ công. Đồng thời cập
+        // nhật/thêm vào violationsCache để lần load lại danh sách đầy đủ gần
+        // nhất (GET /api/violations trong 60s tới) cũng thấy số liệu mới này
+        // ngay, không bị đè lại bằng dữ liệu cache cũ.
+        const raw = await fetchViolationCheck(trimmedCookie);
+        const check = mapViolationResult(key, raw);
+        if (violationsCache.data) {
+            const idx = violationsCache.data.findIndex((a) => a.key === key);
+            if (idx >= 0) violationsCache.data[idx] = check;
+            else violationsCache.data.push(check);
+        }
+        res.json({ success: true, account: key, check });
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, error: err.message });

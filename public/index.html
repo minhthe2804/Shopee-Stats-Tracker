@@ -2479,7 +2479,29 @@
         });
         const json = await res.json();
         if (!json.success) throw new Error(json.error);
-        setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+
+        // Server đã kiểm tra "mất Đã Thích" NGAY cho tài khoản vừa lưu/cập
+        // nhật — cập nhật thẳng vào danh sách đang hiển thị (không cần bấm
+        // "Quét lại" thủ công, cũng không cần quét lại TOÀN BỘ tài khoản
+        // khác — tránh chậm nếu đang theo dõi nhiều tài khoản).
+        const c = json.check;
+        if (c) {
+          setItems(prev => {
+            const without = prev.filter(d => d.key !== c.key);
+            return c.authLoss ? [...without, c] : without;
+          });
+          setErrors(prev => {
+            const without = prev.filter(e => e.key !== c.key);
+            return c.error ? [...without, { key: c.key, owner: c.owner, error: c.error }] : without;
+          });
+          setSaveMsg(
+            c.error    ? `⚠️ Đã lưu nhưng kiểm tra bị lỗi: ${c.error}`
+            : c.authLoss ? `⚠️ Đã lưu — tài khoản "${c.key}" ĐANG mất Đã Thích!`
+            :              `✅ Đã lưu & kiểm tra xong — tài khoản "${c.key}" bình thường.`
+          );
+        } else {
+          setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+        }
         setNewAccKey(""); setNewAccCookie("");
         await loadCookieAccounts();
       } catch (e) { setSaveMsg("❌ " + e.message); }
@@ -2694,7 +2716,26 @@
         });
         const json = await res.json();
         if (!json.success) throw new Error(json.error);
-        setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+
+        // Server đã kiểm tra gậy vi phạm NGAY cho tài khoản vừa lưu/cập nhật —
+        // cập nhật thẳng vào bảng đang hiển thị (không cần bấm "Quét lại" thủ
+        // công, cũng không cần quét lại TOÀN BỘ tài khoản khác).
+        const c = json.check;
+        if (c) {
+          setAccounts(prev => {
+            const idx = prev.findIndex(d => d.key === c.key);
+            if (idx >= 0) { const next = [...prev]; next[idx] = c; return next; }
+            return [...prev, c];
+          });
+          setSaveMsg(
+            c.error        ? `⚠️ Đã lưu nhưng kiểm tra bị lỗi: ${c.error}`
+            : c.isBanned     ? `⛔ Đã lưu — tài khoản "${c.key}" ĐANG BỊ CẤM!`
+            : c.penaltyPoint>0 ? `⚠️ Đã lưu — tài khoản "${c.key}" có ${c.penaltyPoint} điểm phạt.`
+            :                  `✅ Đã lưu & kiểm tra xong — tài khoản "${c.key}" bình thường.`
+          );
+        } else {
+          setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+        }
         setNewAccKey(""); setNewAccCookie("");
         await loadCookieAccounts();
       } catch (e) { setSaveMsg("❌ " + e.message); }
