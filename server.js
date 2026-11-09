@@ -739,7 +739,14 @@ function mapViolationResult(account, raw) {
         owner: getOwner(account),
         error: null,
         penaltyPoint: lh.penalty_point ?? 0,
-        threshold: lh.penalty_point_threshold ?? 5,
+        // LƯU Ý: field "penalty_point_threshold" API trả về (vd 5) KHÔNG khớp
+        // với mẫu số thật Shopee hiển thị trên trang Hiệu Quả Livestream của
+        // họ (vd "9/15" — đối chiếu trực tiếp bằng screenshot thật của user
+        // ngày 09/11/2026). Có vẻ field đó là ngưỡng khác (ngưỡng cấm) chứ
+        // không phải thang điểm hiển thị. Dùng cứng 15 để khớp đúng UI gốc
+        // Shopee; nếu sau này thấy tài khoản nào hiển thị mẫu số khác 15 thì
+        // cần xem lại logic này.
+        threshold: 15,
         isBanned: !!lh.is_banned,
         bannedStart: lh.banned_start_time || null,
         bannedEnd: lh.banned_end_time || null,
