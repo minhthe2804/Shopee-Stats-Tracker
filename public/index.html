@@ -2439,6 +2439,443 @@
     </>;
   }
 
+  function stripTags(s) { return String(s||"").replace(/<\/?[a-z][\s\S]*?>/gi, ""); }
+
+  function AuthStatusTab() {
+    const [state,     setState]     = useState("loading");
+    const [items,     setItems]     = useState([]);
+    const [errors,    setErrors]    = useState([]);
+    const [errMsg,    setErrMsg]    = useState("");
+    const [fetchedAt, setFetchedAt] = useState(null);
+    const [totalChecked, setTotalChecked] = useState(0);
+    const [searchQ,   setSearchQ]   = useState("");
+    const [ownerFilter, setOwnerFilter] = useState("all");
+    const [spinning,  setSpinning]  = useState(false);
+    const [showErrors, setShowErrors] = useState(false);
+
+    const [showCookieMgr, setShowCookieMgr] = useState(false);
+    const [cookieAccounts, setCookieAccounts] = useState([]);
+    const [newAccKey, setNewAccKey] = useState("");
+    const [newAccCookie, setNewAccCookie] = useState("");
+    const [savingCookie, setSavingCookie] = useState(false);
+    const [saveMsg, setSaveMsg] = useState("");
+
+    const loadCookieAccounts = useCallback(async () => {
+      try {
+        const res  = await fetch("/api/notification-cookie");
+        const json = await res.json();
+        if (json.success) setCookieAccounts(json.accounts || []);
+      } catch {}
+    }, []);
+
+    const saveCookie = useCallback(async () => {
+      if (!newAccKey.trim() || !newAccCookie.trim()) { setSaveMsg("Cần nhập tài khoản + cookie"); return; }
+      setSavingCookie(true); setSaveMsg("");
+      try {
+        const res  = await fetch("/api/notification-cookie", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: newAccKey.trim(), cookie: newAccCookie.trim() }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+        setNewAccKey(""); setNewAccCookie("");
+        await loadCookieAccounts();
+      } catch (e) { setSaveMsg("❌ " + e.message); }
+      finally { setSavingCookie(false); }
+    }, [newAccKey, newAccCookie, loadCookieAccounts]);
+
+    const load = useCallback(async () => {
+      setSpinning(true);
+      try {
+        const res  = await fetch("/api/auth-status");
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setItems(json.accounts || []);
+        setErrors(json.errors || []);
+        setFetchedAt(json.fetchedAt);
+        setTotalChecked(json.totalChecked || 0);
+        setState("ok");
+      } catch (e) { setErrMsg(e.message); setState("error"); }
+      finally { setSpinning(false); }
+    }, []);
+
+    useEffect(() => { load(); loadCookieAccounts(); }, [load, loadCookieAccounts]);
+
+    const owners = useMemo(() => [...new Set(items.map(d=>d.owner).filter(Boolean))].sort(), [items]);
+
+    const filtered = useMemo(() => {
+      let rows = items;
+      if (ownerFilter !== "all") rows = rows.filter(d => d.owner === ownerFilter);
+      if (searchQ.trim()) {
+        const q = searchQ.trim().toLowerCase();
+        rows = rows.filter(d => (d.key||"").toLowerCase().includes(q));
+      }
+      return [...rows].sort((a,b) => (a.authLoss?.expiryDate||"9999").localeCompare(b.authLoss?.expiryDate||"9999"));
+    }, [items, ownerFilter, searchQ]);
+
+    if (state==="loading") return <div className="state-center"><div className="spinner"/><div style={{color:"var(--text-muted)",fontSize:13}}>Đang quét thông báo từng tài khoản (có thể mất chút thời gian)...</div></div>;
+    if (state==="error")   return <div className="state-center"><div style={{fontSize:36}}>⚠️</div><div style={{fontWeight:700}}>Không quét được trạng thái mất đã thích</div><div style={{color:"var(--text-muted)",fontSize:12}}>{errMsg}</div><button className="refresh-btn" onClick={load} style={{marginTop:8}}><IcoRefresh/> Thử lại</button></div>;
+
+    return <>
+      <div className="summary-bar" style={{gridTemplateColumns:"repeat(3,1fr)"}}>
+        <div className="summary-card"><div className="summary-card-label">Đã quét</div><div className="summary-card-value">{fmtNum(totalChecked)}</div><div className="summary-card-sub">tài khoản</div></div>
+        <div className="summary-card"><div className="summary-card-label">Mất đã thích</div><div className="summary-card-value" style={{color: items.length>0 ? "var(--red)" : "var(--green)"}}>{fmtNum(items.length)}</div><div className="summary-card-sub">không thêm được SP vào giỏ live</div></div>
+        <div className="summary-card"><div className="summary-card-label">Lỗi khi quét</div><div className="summary-card-value" style={{color:"var(--yellow)"}}>{fmtNum(errors.length)}</div><div className="summary-card-sub" style={{cursor: errors.length?"pointer":"default", textDecoration: errors.length?"underline":"none"}} onClick={()=>errors.length&&setShowErrors(s=>!s)}>{errors.length?"bấm để xem":"cookie/kết nối"}</div></div>
+      </div>
+
+      <div className="section-header" style={{cursor:"pointer"}} onClick={()=>setShowCookieMgr(s=>!s)}>
+        <div className="section-label">🍪 Quản lý cookie theo dõi ({cookieAccounts.length} tài khoản)</div>
+        <div className="section-line"/>
+        <span style={{fontSize:12,color:"var(--text-muted)"}}>{showCookieMgr?"Thu gọn ▲":"Mở rộng ▼"}</span>
+      </div>
+
+      {showCookieMgr && <div className="table-wrap" style={{marginBottom:20,padding:16}}>
+        <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10}}>
+          Cookie lưu riêng ở collection <code>notificationCookies</code> — KHÔNG dùng chung với collection <code>cookies</code> (creator/affiliate).
+          Mở F12 trên tab <code>shopee.vn</code> đã đăng nhập → Network → request bất kỳ tới shopee.vn → copy nguyên dòng <code>cookie:</code> trong Request Headers → dán vào đây.
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+          <input className="search-input" style={{flex:"0 0 220px"}} placeholder="Tên tài khoản (vd: thachsanh10)" value={newAccKey} onChange={e=>setNewAccKey(e.target.value)}/>
+        </div>
+        <textarea
+          placeholder="Dán nguyên dòng cookie: ... ở đây"
+          value={newAccCookie}
+          onChange={e=>setNewAccCookie(e.target.value)}
+          style={{width:"100%",minHeight:80,background:"var(--bg2)",color:"var(--text)",border:"1px solid var(--border2)",borderRadius:8,padding:10,fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}
+        />
+        <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8}}>
+          <button className="refresh-btn" disabled={savingCookie} onClick={saveCookie}>{savingCookie?"Đang lưu...":"💾 Lưu cookie"}</button>
+          {saveMsg && <span style={{fontSize:12,color: saveMsg.startsWith("✅")?"var(--green)":"var(--red)"}}>{saveMsg}</span>}
+        </div>
+
+        {cookieAccounts.length>0 && <div style={{marginTop:14,borderTop:"1px solid var(--border2)",paddingTop:10}}>
+          <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:6}}>Tài khoản đã lưu cookie:</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {cookieAccounts.map(c => (
+              <span key={c.account} className="account-tag" title={"Cập nhật: "+new Date(c.updatedAt).toLocaleString("vi-VN")}>
+                {c.account}{c.owner?` (${c.owner})`:""}
+              </span>
+            ))}
+          </div>
+        </div>}
+      </div>}
+
+      {showErrors && errors.length>0 && <div className="table-wrap" style={{marginBottom:20}}><table>
+        <thead><tr><th>Tài khoản</th><th>Người phụ trách</th><th>Lỗi</th></tr></thead>
+        <tbody>{errors.map(e=><tr key={e.key}><td><span className="account-tag">{e.key}</span></td><td>{e.owner||"—"}</td><td style={{color:"var(--yellow)"}}>{e.error}</td></tr>)}</tbody>
+      </table></div>}
+
+      <div className="section-header">
+        <div className="section-label">Tài khoản mất đã thích</div>
+        <div className="section-line"/>
+        {fetchedAt && <div className="header-time" style={{marginRight:8}}>Quét lúc {new Date(fetchedAt).toLocaleTimeString("vi-VN")}</div>}
+        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={load}><IcoRefresh/> Quét lại</button>
+      </div>
+
+      <div className="toolbar">
+        <div className="search-wrap">
+          <span className="search-icon"><IcoSearch/></span>
+          <input className="search-input" placeholder="Tìm tài khoản…" value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Người phụ trách:</span>
+          <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            {owners.map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="table-wrap"><table>
+        <thead><tr>
+          <th>Tài khoản</th>
+          <th>Người phụ trách</th>
+          <th>Nội dung thông báo</th>
+          <th>Từ ngày</th>
+          <th>Đến hết ngày</th>
+          <th className="right">Trạng thái</th>
+        </tr></thead>
+        <tbody>
+          {filtered.length===0
+            ? <tr className="empty-row"><td colSpan={6}><span className="empty-icon">✅</span>Không có tài khoản nào mất đã thích</td></tr>
+            : filtered.map(d => {
+              const todayVN = new Date(Date.now() + 7*3600_000).toISOString().slice(0,10);
+              const active = d.authLoss.expiryDate && todayVN <= d.authLoss.expiryDate;
+              return (
+              <tr key={d.key}>
+                <td><span className="account-tag">{d.key}</span></td>
+                <td>{d.owner || <span style={{color:"var(--text-muted)"}}>—</span>}</td>
+                <td style={{maxWidth:380}}>
+                  <div style={{fontWeight:600}}>{stripTags(d.authLoss.title)}</div>
+                  <div style={{color:"var(--text-muted)",fontSize:12,whiteSpace:"pre-wrap"}}>{stripTags(d.authLoss.content)}</div>
+                </td>
+                <td style={{color:"var(--text-muted)"}}>{d.authLoss.fromDate || "—"}</td>
+                <td style={{fontWeight:700,color: d.authLoss.expiryDate ? "var(--red)" : "var(--text-muted)"}}>
+                  {d.authLoss.expiryDate || "không rõ ngày"}
+                </td>
+                <td className="right">
+                  {d.authLoss.expiryDate
+                    ? (active
+                        ? <span className="badge-live" style={{color:"var(--red)",background:"rgba(239,68,68,0.1)",borderColor:"rgba(239,68,68,0.3)"}}><span className="dot-pulse" style={{background:"var(--red)"}}/>Đang hạn chế</span>
+                        : <span className="badge-done">Đã hết hạn chế</span>)
+                    : <span style={{color:"var(--text-muted)",fontSize:12}}>—</span>}
+                </td>
+              </tr>
+            );})
+          }
+        </tbody>
+      </table></div>
+    </>;
+  }
+
+  // ── Tab Gậy Vi Phạm (penalty point) — gọi API bên thứ ba ht.toolshopee.vn/api/check ──
+  function ViolationsTab() {
+    const [state,     setState]     = useState("loading");
+    const [accounts,  setAccounts]  = useState([]);
+    const [errMsg,    setErrMsg]    = useState("");
+    const [fetchedAt, setFetchedAt] = useState(null);
+    const [searchQ,   setSearchQ]   = useState("");
+    const [ownerFilter, setOwnerFilter] = useState("all");
+    const [statusFilter, setStatusFilter] = useState("all"); // all|banned|risk|ok|error
+    const [spinning,  setSpinning]  = useState(false);
+    const [expandedKey, setExpandedKey] = useState(null);
+
+    const [showCookieMgr, setShowCookieMgr] = useState(false);
+    const [cookieAccounts, setCookieAccounts] = useState([]);
+    const [newAccKey, setNewAccKey] = useState("");
+    const [newAccCookie, setNewAccCookie] = useState("");
+    const [savingCookie, setSavingCookie] = useState(false);
+    const [saveMsg, setSaveMsg] = useState("");
+
+    const loadCookieAccounts = useCallback(async () => {
+      try {
+        const res  = await fetch("/api/violation-cookie");
+        const json = await res.json();
+        if (json.success) setCookieAccounts(json.accounts || []);
+      } catch {}
+    }, []);
+
+    const saveCookie = useCallback(async () => {
+      if (!newAccKey.trim() || !newAccCookie.trim()) { setSaveMsg("Cần nhập tài khoản + cookie"); return; }
+      setSavingCookie(true); setSaveMsg("");
+      try {
+        const res  = await fetch("/api/violation-cookie", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ account: newAccKey.trim(), cookie: newAccCookie.trim() }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setSaveMsg("✅ Đã lưu cookie cho " + newAccKey.trim());
+        setNewAccKey(""); setNewAccCookie("");
+        await loadCookieAccounts();
+      } catch (e) { setSaveMsg("❌ " + e.message); }
+      finally { setSavingCookie(false); }
+    }, [newAccKey, newAccCookie, loadCookieAccounts]);
+
+    const load = useCallback(async (force=false) => {
+      setSpinning(true);
+      try {
+        const res  = await fetch(force ? "/api/violations?refresh=1" : "/api/violations");
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error);
+        setAccounts(json.accounts || []);
+        setFetchedAt(json.fetchedAt);
+        setState("ok");
+      } catch (e) { setErrMsg(e.message); setState("error"); }
+      finally { setSpinning(false); }
+    }, []);
+
+    useEffect(() => { load(); loadCookieAccounts(); }, [load, loadCookieAccounts]);
+
+    const owners = useMemo(() => [...new Set(accounts.map(d=>d.owner).filter(Boolean))].sort(), [accounts]);
+
+    const bannedCount = useMemo(() => accounts.filter(d=>!d.error && d.isBanned).length, [accounts]);
+    const riskCount   = useMemo(() => accounts.filter(d=>!d.error && !d.isBanned && (d.penaltyPoint||0) > 0).length, [accounts]);
+    const errorCount  = useMemo(() => accounts.filter(d=>d.error).length, [accounts]);
+
+    const filtered = useMemo(() => {
+      let rows = accounts;
+      if (ownerFilter !== "all") rows = rows.filter(d => d.owner === ownerFilter);
+      if (statusFilter === "banned") rows = rows.filter(d => !d.error && d.isBanned);
+      else if (statusFilter === "risk") rows = rows.filter(d => !d.error && !d.isBanned && (d.penaltyPoint||0) > 0);
+      else if (statusFilter === "ok") rows = rows.filter(d => !d.error && !d.isBanned && (d.penaltyPoint||0) === 0);
+      else if (statusFilter === "error") rows = rows.filter(d => d.error);
+      if (searchQ.trim()) {
+        const q = searchQ.trim().toLowerCase();
+        rows = rows.filter(d => (d.key||"").toLowerCase().includes(q));
+      }
+      return [...rows].sort((a,b) => {
+        if (!!a.error !== !!b.error) return a.error ? 1 : -1;
+        if (!!a.isBanned !== !!b.isBanned) return a.isBanned ? -1 : 1;
+        return (b.penaltyPoint||0) - (a.penaltyPoint||0);
+      });
+    }, [accounts, ownerFilter, statusFilter, searchQ]);
+
+    if (state==="loading") return <div className="state-center"><div className="spinner"/><div style={{color:"var(--text-muted)",fontSize:13}}>Đang quét gậy vi phạm từng tài khoản (có thể mất chút thời gian)...</div></div>;
+    if (state==="error")   return <div className="state-center"><div style={{fontSize:36}}>⚠️</div><div style={{fontWeight:700}}>Không quét được gậy vi phạm</div><div style={{color:"var(--text-muted)",fontSize:12}}>{errMsg}</div><button className="refresh-btn" onClick={()=>load()} style={{marginTop:8}}><IcoRefresh/> Thử lại</button></div>;
+
+    return <>
+      <div className="summary-bar" style={{gridTemplateColumns:"repeat(4,1fr)"}}>
+        <div className="summary-card"><div className="summary-card-label">Đã quét</div><div className="summary-card-value">{fmtNum(accounts.length)}</div><div className="summary-card-sub">tài khoản</div></div>
+        <div className="summary-card"><div className="summary-card-label">Đang bị cấm</div><div className="summary-card-value" style={{color: bannedCount>0 ? "var(--red)" : "var(--green)"}}>{fmtNum(bannedCount)}</div><div className="summary-card-sub">live đang bị hạn chế</div></div>
+        <div className="summary-card"><div className="summary-card-label">Có điểm phạt</div><div className="summary-card-value" style={{color: riskCount>0 ? "var(--orange)" : "var(--green)"}}>{fmtNum(riskCount)}</div><div className="summary-card-sub">cần theo dõi</div></div>
+        <div className="summary-card"><div className="summary-card-label">Lỗi khi quét</div><div className="summary-card-value" style={{color:"var(--yellow)"}}>{fmtNum(errorCount)}</div><div className="summary-card-sub">cookie/kết nối</div></div>
+      </div>
+
+      <div style={{fontSize:11.5,color:"var(--text-muted)",marginBottom:14,lineHeight:1.5}}>
+        ⚠️ Dữ liệu lấy từ công cụ bên thứ ba (<code>ht.toolshopee.vn</code>), không phải API chính thức của Shopee — có thể thay đổi hoặc gián đoạn bất cứ lúc nào. Nên dùng như tín hiệu cảnh báo sớm, tham khảo thêm dashboard Shopee chính thức trước khi quyết định.
+      </div>
+
+      <div className="section-header" style={{cursor:"pointer"}} onClick={()=>setShowCookieMgr(s=>!s)}>
+        <div className="section-label">🍪 Quản lý cookie kiểm tra gậy vi phạm ({cookieAccounts.length} tài khoản)</div>
+        <div className="section-line"/>
+        <span style={{fontSize:12,color:"var(--text-muted)"}}>{showCookieMgr?"Thu gọn ▲":"Mở rộng ▼"}</span>
+      </div>
+
+      {showCookieMgr && <div className="table-wrap" style={{marginBottom:20,padding:16}}>
+        <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:10}}>
+          Cookie lưu riêng ở collection <code>violationCheckCookies</code> — KHÔNG dùng chung với <code>cookies</code> (creator/affiliate) hay <code>notificationCookies</code> (mất đã thích), vì API này cần cookie có <code>SPC_F</code> + <code>csrftoken</code>.
+          Mở F12 trên tab <code>shopee.vn</code> đã đăng nhập → Network → request bất kỳ tới shopee.vn → copy nguyên dòng <code>cookie:</code> trong Request Headers → dán vào đây.
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+          <input className="search-input" style={{flex:"0 0 220px"}} placeholder="Tên tài khoản (vd: hhshop33)" value={newAccKey} onChange={e=>setNewAccKey(e.target.value)}/>
+        </div>
+        <textarea
+          placeholder="Dán nguyên dòng cookie: ... ở đây"
+          value={newAccCookie}
+          onChange={e=>setNewAccCookie(e.target.value)}
+          style={{width:"100%",minHeight:80,background:"var(--bg2)",color:"var(--text)",border:"1px solid var(--border2)",borderRadius:8,padding:10,fontSize:12,fontFamily:"monospace",boxSizing:"border-box"}}
+        />
+        <div style={{display:"flex",alignItems:"center",gap:10,marginTop:8}}>
+          <button className="refresh-btn" disabled={savingCookie} onClick={saveCookie}>{savingCookie?"Đang lưu...":"💾 Lưu cookie"}</button>
+          {saveMsg && <span style={{fontSize:12,color: saveMsg.startsWith("✅")?"var(--green)":"var(--red)"}}>{saveMsg}</span>}
+        </div>
+
+        {cookieAccounts.length>0 && <div style={{marginTop:14,borderTop:"1px solid var(--border2)",paddingTop:10}}>
+          <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:6}}>Tài khoản đã lưu cookie:</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+            {cookieAccounts.map(c => (
+              <span key={c.account} className="account-tag" title={"Cập nhật: "+new Date(c.updatedAt).toLocaleString("vi-VN")}>
+                {c.account}{c.owner?` (${c.owner})`:""}
+              </span>
+            ))}
+          </div>
+        </div>}
+      </div>}
+
+      <div className="section-header">
+        <div className="section-label">Tình trạng vi phạm</div>
+        <div className="section-line"/>
+        {fetchedAt && <div className="header-time" style={{marginRight:8}}>Quét lúc {new Date(fetchedAt).toLocaleTimeString("vi-VN")}</div>}
+        <button className={`refresh-btn ${spinning?"spinning":""}`} onClick={()=>load(true)}><IcoRefresh/> Quét lại</button>
+      </div>
+
+      <div className="toolbar">
+        <div className="search-wrap">
+          <span className="search-icon"><IcoSearch/></span>
+          <input className="search-input" placeholder="Tìm tài khoản…" value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Người phụ trách:</span>
+          <select className="sort-select" value={ownerFilter} onChange={e=>setOwnerFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            {owners.map(o=><option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Trạng thái:</span>
+          <select className="sort-select" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            <option value="banned">Đang bị cấm</option>
+            <option value="risk">Có điểm phạt</option>
+            <option value="ok">Tốt</option>
+            <option value="error">Lỗi khi quét</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="table-wrap"><table>
+        <thead><tr>
+          <th>Tài khoản</th>
+          <th>Người phụ trách</th>
+          <th>Điểm phạt</th>
+          <th>Trạng thái</th>
+          <th>Vi phạm gần nhất</th>
+          <th className="right">Bị cấm đến</th>
+        </tr></thead>
+        <tbody>
+          {filtered.length===0
+            ? <tr className="empty-row"><td colSpan={6}><span className="empty-icon">✅</span>Không có dữ liệu phù hợp bộ lọc</td></tr>
+            : filtered.map(d => {
+              const isOpen = expandedKey === d.key;
+              return (
+              <React.Fragment key={d.key}>
+              <tr style={{cursor: d.error ? "default" : "pointer"}} onClick={()=>!d.error && setExpandedKey(isOpen ? null : d.key)}>
+                <td><span className="account-tag">{d.key}</span></td>
+                <td>{d.owner || <span style={{color:"var(--text-muted)"}}>—</span>}</td>
+                <td style={{fontWeight:700, color: d.error ? "var(--text-muted)" : (d.isBanned ? "var(--red)" : (d.penaltyPoint>0 ? "var(--orange)" : "var(--green)"))}}>
+                  {d.error ? "—" : `${d.penaltyPoint}/${d.threshold}`}
+                </td>
+                <td>
+                  {d.error
+                    ? <span style={{fontSize:12,color:"var(--yellow)"}}>{d.error}</span>
+                    : d.isBanned
+                      ? <span className="badge-live" style={{color:"var(--red)",background:"rgba(239,68,68,0.1)",borderColor:"rgba(239,68,68,0.3)"}}><span className="dot-pulse" style={{background:"var(--red)"}}/>Đang cấm</span>
+                      : d.penaltyPoint>0
+                        ? <span className="badge-live" style={{color:"var(--orange)",background:"rgba(249,115,22,0.1)",borderColor:"rgba(249,115,22,0.3)"}}>{d.riskLevel || "Cần cải thiện"}</span>
+                        : <span className="badge-done">Tốt</span>}
+                </td>
+                <td style={{maxWidth:320,color:"var(--text-muted)",fontSize:12}}>{d.violationTitle || "—"}</td>
+                <td className="right" style={{fontSize:12,color: d.isBanned ? "var(--red)" : "var(--text-muted)"}}>
+                  {d.bannedEnd ? new Date(d.bannedEnd).toLocaleString("vi-VN") : "—"}
+                </td>
+              </tr>
+              {isOpen && !d.error && <tr>
+                <td colSpan={6} style={{background:"var(--bg2)",padding:16}}>
+                  {d.violationDesc && <div style={{fontSize:13,marginBottom:10,whiteSpace:"pre-wrap"}}>
+                    {d.violationDesc}
+                    {d.policyLink && <div style={{marginTop:6}}><a href={d.policyLink} target="_blank" rel="noreferrer" style={{color:"var(--orange)"}}>Xem chính sách liên quan ↗</a></div>}
+                  </div>}
+                  <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:8}}>
+                    Tổng: {d.countViolations||0} vi phạm · {d.countTerminated||0} phiên bị chấm dứt · {d.countWarned||0} phiên bị cảnh báo
+                  </div>
+                  {d.sessions && d.sessions.length>0 ? (
+                    <div style={{display:"grid",gap:8}}>
+                      {d.sessions.map((s,i) => (
+                        <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:8,padding:"8px 12px"}}>
+                          <div>
+                            <div style={{fontWeight:600,fontSize:13}}>{s.title || "(không có tiêu đề)"}</div>
+                            <div style={{fontSize:11.5,color:"var(--text-muted)"}}>Bắt đầu: {s.startTime ? new Date(s.startTime).toLocaleString("vi-VN") : "—"}</div>
+                          </div>
+                          <div>
+                            {s.isTerminated
+                              ? <span className="badge-live" style={{color:"var(--red)",background:"rgba(239,68,68,0.1)",borderColor:"rgba(239,68,68,0.3)"}}>Đã chấm dứt</span>
+                              : s.isWarned
+                                ? <span className="badge-live" style={{color:"var(--orange)",background:"rgba(249,115,22,0.1)",borderColor:"rgba(249,115,22,0.3)"}}>Đã cảnh báo</span>
+                                : s.noViolation
+                                  ? <span className="badge-done">Không vi phạm</span>
+                                  : <span style={{fontSize:12,color:"var(--text-muted)"}}>—</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div style={{fontSize:12,color:"var(--text-muted)"}}>Không có phiên vi phạm nào gần đây.</div>}
+                </td>
+              </tr>}
+              </React.Fragment>
+            );})
+          }
+        </tbody>
+      </table></div>
+    </>;
+  }
+
   function App() {
     const [tab,       setTab]      = useState("live");
     const [state,     setState]    = useState("loading");
@@ -2513,6 +2950,12 @@
           <span className="tab-icon">🩹</span> Điền Hoa Hồng Còn Thiếu
           {missingBadge>0&&<span style={{background:"var(--red)",color:"#fff",borderRadius:10,padding:"1px 6px",fontSize:10,fontWeight:700}}>{missingBadge}</span>}
         </button>
+        <button className={`tab-btn ${tab==="authstatus"?"active":""}`} onClick={()=>setTab("authstatus")}>
+          <span className="tab-icon">🔐</span> Mất Đã Thích
+        </button>
+        <button className={`tab-btn ${tab==="violations"?"active":""}`} onClick={()=>setTab("violations")}>
+          <span className="tab-icon">⚠️</span> Gậy Vi Phạm
+        </button>
       </div>
 
       <div className="main">
@@ -2521,6 +2964,8 @@
         {tab==="reports"     && <ReportsTab/>}
         {tab==="livecart"    && <LiveCartTab/>}
         {tab==="fillmissing" && <FillMissingCommissionCard/>}
+        {tab==="authstatus"  && <AuthStatusTab/>}
+        {tab==="violations"  && <ViolationsTab/>}
       </div>
     </>;
   }

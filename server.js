@@ -11,6 +11,7 @@ import path from "path";
 import fs from "fs";
 import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory, readOwnersFromSheet, getMissingCommissionAccounts, fillMissingCommissionValues } from "./sheetSync.js";
 import { LiveCart, connectLiveCartDb, isLiveCartDbConnected } from "./liveCartModel.js";
+import { NotificationCookie, ViolationCookie } from "./cookieModels.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -293,6 +294,10 @@ const COMM_CACHE_TTL = 60_000;     // hoa hồng cache 60s
 const sessionProductsCache      = {}; // key: "accountKey::sessionId" → { data, total, at }
 const SESSION_PRODUCTS_CACHE_TTL = 30_000;
 
+// Cache cho tab Gậy Vi Phạm — API bên thứ ba, cache 60s để tránh gọi liên tục
+const violationsCache = { data: null, at: 0 };
+const VIOLATIONS_CACHE_TTL = 60_000;
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 async function getAccountsFromFirestore() {
     const snapshot = await getDocsFromServer(query(collection(db, "cookies")));
@@ -437,6 +442,314 @@ async function fetchSessionProducts(spcSt, sessionId, page = 1, pageSize = 100) 
     );
     return data;
 }
+
+// ── Kiểm tra trạng thái mất "Đã Thích" trong giỏ hàng Live (qua thông báo shopee.vn) ──
+// Cookie cho tính năng này KHÔNG dùng chung collection "cookies" (dành cho
+// creator/affiliate, chỉ cần SPC_ST) — mà lưu riêng ở collection MongoDB
+// "notificationCookies" (model NotificationCookie, account -> full cookie dán
+// tay từ DevTools), vì endpoint notification cần FULL cookie khác hẳn cấu
+// trúc collection cũ. Dùng CHUNG kết nối Mongo với Live Cart nhưng KHÁC
+// collection (xem cookieModels.js) — vẫn nằm ngoài Firestore.
+function hexDecode(hex) {
+    try { return Buffer.from(hex, "hex").toString("utf-8"); }
+    catch { return ""; }
+}
+function extractCsrfToken(cookieStr) {
+    const m = String(cookieStr || "").match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    return m ? m[1] : null;
+}
+
+async function getNotificationCookiesFromMongo() {
+    const docs = await NotificationCookie.find({}).lean();
+    return docs.map((d) => ({ account: d.account, cookie: d.cookie, updatedAt: d.updatedAt }));
+}
+
+// Lưu/cập nhật cookie cho 1 tài khoản — dán tay từ DevTools (dòng "cookie:" trong
+// request header), upsert theo account.
+app.post("/api/notification-cookie", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const { account, cookie } = req.body || {};
+        if (!account || !String(account).trim()) return res.status(400).json({ success: false, error: "Thiếu account" });
+        if (!cookie || !String(cookie).trim()) return res.status(400).json({ success: false, error: "Thiếu cookie" });
+
+        const key = String(account).trim();
+        await NotificationCookie.findOneAndUpdate(
+            { account: key },
+            { account: key, cookie: String(cookie).trim(), updatedAt: new Date().toISOString() },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        res.json({ success: true, account: key });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Danh sách account đã lưu cookie (KHÔNG trả nguyên cookie về client để tránh
+// lộ lại session token qua network tab của trình duyệt khi xem dashboard).
+app.get("/api/notification-cookie", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const list = await getNotificationCookiesFromMongo();
+        res.json({
+            success: true,
+            accounts: list.map((d) => ({ account: d.account, owner: getOwner(d.account), updatedAt: d.updatedAt })),
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// LƯU Ý: request thật từ trình duyệt còn kèm af-ac-enc-dat / x-sap-sec / x-sap-ri
+// (token chống bot tự sinh bởi JS client) — nếu Shopee bắt đầu chặn (403/lỗi
+// lạ) khi THIẾU các header này thì gọi trực tiếp bằng axios sẽ không khả thi nữa.
+async function fetchAccountNotifications(key, cookie, actionCate = 6, limit = 10) {
+    const csrf = extractCsrfToken(cookie);
+    if (!cookie) return { key, error: "Không có cookie", notis: [] };
+
+    try {
+        const { data } = await axios.get(
+            `https://shopee.vn/api/v4/notification/get_notifications?action_cate=${actionCate}&limit=${limit}`,
+            {
+                headers: {
+                    cookie,
+                    referer: "https://shopee.vn/user/notifications/shopee",
+                    "user-agent": UA,
+                    accept: "application/json, text/plain, */*",
+                    "x-requested-with": "XMLHttpRequest",
+                    "x-api-source": "pc",
+                    "x-shopee-language": "vi",
+                    ...(csrf ? { "x-csrftoken": csrf } : {}),
+                },
+                timeout: 10000,
+            }
+        );
+        if (data?.error) return { key, error: `API lỗi: ${data.error_msg || data.error}`, notis: [] };
+
+        const notis = (data?.data?.actions || []).map((a) => ({
+            title: hexDecode(a.title),
+            content: hexDecode(a.content),
+            createtime: a.createtime,
+            action_id: a.action_id,
+        }));
+        return { key, error: null, notis };
+    } catch (err) {
+        return { key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", notis: [] };
+    }
+}
+
+// Mẫu thông báo thật (title "Thông báo từ Shopee Live"):
+// 'Shopee ghi nhận bạn có hành vi vi phạm Tiêu chuẩn cộng đồng của Shopee
+//  Live nên Shopee đã hạn chế tính năng thêm sản phẩm từ mục "Đã Thích"
+//  trong giỏ hàng Live của bạn từ ngày 02/11/2026 đến hết ngày 05/11/2026.'
+const DATE_RE = /(\d{1,2})[/-](\d{1,2})[/-](\d{4})/; // dd/mm/yyyy hoặc dd-mm-yyyy
+const FROM_TO_RE = /từ ngày\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})[\s\S]{0,40}?đến hết ngày\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})/i;
+
+function toIso(d, m, y) { return `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`; }
+
+function findAuthLossNotice(notis) {
+    for (const n of notis) {
+        const text = `${n.title} ${n.content}`;
+        const lower = text.toLowerCase();
+        // Bắt buộc có cả "đã thích" lẫn "giỏ hàng live" + 1 trong các từ chỉ hành
+        // động hạn chế — tránh match nhầm thông báo khác chỉ chứa 1 trong 2 từ.
+        const isMatch = lower.includes("đã thích") && lower.includes("giỏ hàng live") && (lower.includes("hạn chế") || lower.includes("vi phạm"));
+        if (!isMatch) continue;
+
+        let fromDate = null, expiryDate = null;
+        const range = text.match(FROM_TO_RE);
+        if (range) {
+            fromDate   = toIso(range[1], range[2], range[3]);
+            expiryDate = toIso(range[4], range[5], range[6]);
+        } else {
+            const single = text.match(/đến hết ngày\s*(\d{1,2})[/-](\d{1,2})[/-](\d{4})/i) || text.match(DATE_RE);
+            if (single) expiryDate = toIso(single[1], single[2], single[3]);
+        }
+        return { title: n.title, content: n.content, createtime: n.createtime, fromDate, expiryDate };
+    }
+    return null;
+}
+
+// GET /api/auth-status — quét các tài khoản ĐÃ CÓ cookie trong collection
+// notificationCookies (nhập thủ công qua dashboard), trả về acc nào có thông
+// báo "mất đã thích" (không thêm được sản phẩm vào giỏ live) trong 10 thông
+// báo gần nhất (action_cate=6).
+app.get("/api/auth-status", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const saved = await getNotificationCookiesFromMongo();
+        const settled = await runPool(saved, (d) => fetchAccountNotifications(d.account, d.cookie), CONCURRENCY, statsBackoff);
+
+        const results = settled.filter(Boolean).map((r) => ({
+            key: r.key,
+            owner: getOwner(r.key),
+            error: r.error,
+            authLoss: r.error ? null : findAuthLossNotice(r.notis),
+        }));
+
+        const withIssue = results.filter((r) => r.authLoss);
+        const withError = results.filter((r) => r.error);
+
+        res.json({
+            success: true,
+            fetchedAt: new Date().toISOString(),
+            totalChecked: results.length,
+            issueCount: withIssue.length,
+            errorCount: withError.length,
+            accounts: withIssue,
+            errors: withError.map((r) => ({ key: r.key, owner: r.owner, error: r.error })),
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// ── Kiểm tra gậy vi phạm (penalty point) qua ht.toolshopee.vn/api/check ─────
+// Tool bên THỨ BA (không phải domain Shopee chính thức) — trả cấu trúc
+// results[0].live_health gồm điểm phạt, trạng thái cấm, danh sách phiên bị
+// chấm dứt gần đây. Cookie cho API này cần SPC_F + csrftoken, KHÁC với cookie
+// SPC_ST dùng cho creator.shopee.vn và cũng khác full-cookie của
+// notificationCookies (domain/scope khác) — nên lưu ở collection MongoDB
+// RIÊNG "violationCheckCookies" (model ViolationCookie — dán tay qua UI,
+// giống hệt cơ chế của notificationCookies). Cùng kết nối Mongo với Live
+// Cart và NotificationCookie nhưng mỗi loại 1 collection riêng biệt.
+async function getViolationCookiesFromMongo() {
+    const docs = await ViolationCookie.find({}).lean();
+    return docs.map((d) => ({ account: d.account, cookie: d.cookie, updatedAt: d.updatedAt }));
+}
+
+// Lưu/cập nhật cookie kiểm tra gậy cho 1 tài khoản — dán tay từ DevTools
+// (request "check" tới ht.toolshopee.vn → Payload → field "cookies"), upsert
+// theo account.
+app.post("/api/violation-cookie", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const { account, cookie } = req.body || {};
+        if (!account || !String(account).trim()) return res.status(400).json({ success: false, error: "Thiếu account" });
+        if (!cookie || !String(cookie).trim()) return res.status(400).json({ success: false, error: "Thiếu cookie" });
+
+        const key = String(account).trim();
+        await ViolationCookie.findOneAndUpdate(
+            { account: key },
+            { account: key, cookie: String(cookie).trim(), updatedAt: new Date().toISOString() },
+            { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
+        res.json({ success: true, account: key });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Danh sách account đã lưu cookie kiểm tra gậy (không trả nguyên cookie về client).
+app.get("/api/violation-cookie", async (req, res) => {
+    if (!isLiveCartDbConnected()) {
+        return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+    }
+    try {
+        const list = await getViolationCookiesFromMongo();
+        res.json({
+            success: true,
+            accounts: list.map((d) => ({ account: d.account, owner: getOwner(d.account), updatedAt: d.updatedAt })),
+        });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Gọi API bên thứ ba ht.toolshopee.vn — trả nguyên cấu trúc { code, results: [...] }
+async function fetchViolationCheck(cookie) {
+    const csrf = extractCsrfToken(cookie);
+    try {
+        const { data } = await axios.post(
+            "https://ht.toolshopee.vn/api/check",
+            { cookies: cookie, country: "vn" },
+            {
+                headers: {
+                    "content-type": "application/json",
+                    "user-agent": UA,
+                    accept: "application/json, text/plain, */*",
+                    ...(csrf ? { "x-csrftoken": csrf } : {}),
+                },
+                timeout: 15000,
+            }
+        );
+        return data;
+    } catch (err) {
+        return { error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối" };
+    }
+}
+
+// Chuẩn hoá 1 kết quả thô từ ht.toolshopee.vn thành dạng gọn cho frontend.
+function mapViolationResult(account, raw) {
+    const d = raw?.results?.[0];
+    if (!raw || raw.error || raw.code !== 0 || !d) {
+        return { key: account, owner: getOwner(account), error: raw?.error || `Lỗi API (code ${raw?.code ?? "?"})` };
+    }
+    const lh = d.live_health || {};
+    return {
+        key: account,
+        owner: getOwner(account),
+        error: null,
+        penaltyPoint: lh.penalty_point ?? 0,
+        threshold: lh.penalty_point_threshold ?? 5,
+        isBanned: !!lh.is_banned,
+        bannedStart: lh.banned_start_time || null,
+        bannedEnd: lh.banned_end_time || null,
+        riskLevel: lh.risk_type_show || null,
+        countTerminated: lh.count_terminated || 0,
+        countViolations: lh.count_violations || 0,
+        countWarned: lh.count_warned || 0,
+        violationTitle: lh.detail?.title || null,
+        violationDesc: lh.detail?.desc || null,
+        policyLink: lh.detail?.policy_link || null,
+        sessions: (lh.sessions || []).map((s) => ({
+            title: s.title,
+            startTime: s.start_time,
+            qcTime: s.qc_time,
+            isTerminated: s.is_terminated,
+            isWarned: s.is_warned,
+            noViolation: s.no_violation,
+        })),
+    };
+}
+
+// GET /api/violations — quét toàn bộ tài khoản đã lưu cookie kiểm tra gậy,
+// trả điểm phạt + trạng thái cấm + danh sách phiên bị chấm dứt gần đây.
+// Cache 60s (?refresh=1 để bỏ qua cache) vì đây là API bên thứ ba, hạn chế
+// gọi liên tục mỗi lần người dùng đổi tab.
+app.get("/api/violations", async (req, res) => {
+    try {
+        const force = req.query.refresh === "1";
+        if (!force && violationsCache.data && Date.now() - violationsCache.at < VIOLATIONS_CACHE_TTL) {
+            return res.json({ success: true, accounts: violationsCache.data, fetchedAt: violationsCache.at, cached: true });
+        }
+
+        if (!isLiveCartDbConnected()) {
+            return res.status(503).json({ success: false, error: "MongoDB chưa kết nối (thiếu MONGODB_URI trên server)" });
+        }
+        const saved = await getViolationCookiesFromMongo();
+        const settled = await runPool(saved, (d) => fetchViolationCheck(d.cookie), CONCURRENCY, statsBackoff);
+        const accounts = settled.map((r, i) => mapViolationResult(saved[i].account, r));
+
+        violationsCache.data = accounts;
+        violationsCache.at = Date.now();
+        res.json({ success: true, accounts, fetchedAt: violationsCache.at, cached: false });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // ── Affiliate Commission API ─────────────────────────────────────────────────
 function dayRange(dateStr) {
