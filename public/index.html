@@ -2726,10 +2726,6 @@
         <div className="summary-card"><div className="summary-card-label">Lỗi khi quét</div><div className="summary-card-value" style={{color:"var(--yellow)"}}>{fmtNum(errorCount)}</div><div className="summary-card-sub">cookie/kết nối</div></div>
       </div>
 
-      <div style={{fontSize:11.5,color:"var(--text-muted)",marginBottom:14,lineHeight:1.5}}>
-        ⚠️ Dữ liệu lấy từ công cụ bên thứ ba (<code>ht.toolshopee.vn</code>), không phải API chính thức của Shopee — có thể thay đổi hoặc gián đoạn bất cứ lúc nào. Nên dùng như tín hiệu cảnh báo sớm, tham khảo thêm dashboard Shopee chính thức trước khi quyết định.
-      </div>
-
       <div className="section-header" style={{cursor:"pointer"}} onClick={()=>setShowCookieMgr(s=>!s)}>
         <div className="section-label">🍪 Quản lý cookie kiểm tra gậy vi phạm ({cookieAccounts.length} tài khoản)</div>
         <div className="section-line"/>
@@ -2837,30 +2833,65 @@
                 </td>
               </tr>
               {isOpen && !d.error && <tr>
-                <td colSpan={6} style={{background:"var(--bg2)",padding:16}}>
-                  {d.violationDesc && <div style={{fontSize:13,marginBottom:10,whiteSpace:"pre-wrap"}}>
-                    {d.violationDesc}
-                    {d.policyLink && <div style={{marginTop:6}}><a href={d.policyLink} target="_blank" rel="noreferrer" style={{color:"var(--orange)"}}>Xem chính sách liên quan ↗</a></div>}
+                <td colSpan={6} style={{background:"var(--bg2)",padding:18}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"var(--text-muted)",textTransform:"uppercase",letterSpacing:0.4,marginBottom:12}}>Hiệu Quả Livestream</div>
+
+                  {d.isBanned && <div style={{display:"flex",alignItems:"flex-start",gap:10,background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.35)",borderRadius:10,padding:"12px 14px",marginBottom:16}}>
+                    <span style={{fontSize:18,lineHeight:1}}>⛔</span>
+                    <div>
+                      <div style={{fontWeight:700,color:"var(--red)",fontSize:14,marginBottom:3}}>Cấm Tạm Thời</div>
+                      <div style={{fontSize:12.5,color:"var(--text)"}}>
+                        Quyền truy cập livestream bị cấm {d.bannedEnd ? `đến ${new Date(d.bannedEnd).toLocaleString("vi-VN")}` : "tạm thời"} do vi phạm nhiều lần.
+                      </div>
+                    </div>
                   </div>}
-                  <div style={{fontSize:12,color:"var(--text-muted)",marginBottom:8}}>
-                    Tổng: {d.countViolations||0} vi phạm · {d.countTerminated||0} phiên bị chấm dứt · {d.countWarned||0} phiên bị cảnh báo
+
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"var(--text)"}}>Điểm Quản Lý Nội Dung</div>
+                    <div style={{fontSize:22,fontWeight:800,color: d.isBanned ? "var(--red)" : (d.penaltyPoint>0 ? "var(--orange)" : "var(--green)")}}>
+                      {d.penaltyPoint}<span style={{fontSize:13,fontWeight:600,color:"var(--text-muted)"}}>/{d.threshold}</span>
+                    </div>
                   </div>
+
+                  {(d.riskLevel || d.penaltyPoint>0) && <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,marginTop:8}}>
+                    <span style={{fontSize:14}}>⚠️</span>
+                    <span style={{fontWeight:700,fontSize:13,color:"var(--orange)"}}>{d.riskLevel || "Cần Cải Thiện"}</span>
+                  </div>}
+
+                  {d.violationTitle && <>
+                    <div style={{borderTop:"1px solid var(--border2)",margin:"12px 0"}}/>
+                    <div style={{fontWeight:700,fontSize:13,color: d.isBanned ? "var(--red)" : "var(--orange)",marginBottom:4}}>
+                      {d.violationTitle}{d.sessions?.length ? ` • ${d.sessions[0].isTerminated ? "Đã chấm dứt" : (d.sessions[0].isWarned ? "Đã cảnh báo" : "")}` : ""}
+                    </div>
+                    {d.violationDesc && <div style={{fontSize:12.5,color:"var(--text-muted)",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{d.violationDesc}</div>}
+                    {d.policyLink && <a href={d.policyLink} target="_blank" rel="noreferrer" style={{display:"inline-block",marginTop:6,fontSize:12.5,color:"var(--orange)"}}>Xem chính sách →</a>}
+                  </>}
+
+                  <div style={{borderTop:"1px solid var(--border2)",margin:"14px 0 10px"}}/>
+                  <div style={{fontWeight:700,fontSize:13,marginBottom:10}}>
+                    Phiên Live Vi Phạm (7 ngày) — {d.sessions?.length || 0}
+                  </div>
+
                   {d.sessions && d.sessions.length>0 ? (
-                    <div style={{display:"grid",gap:8}}>
+                    <div style={{display:"grid",gap:10}}>
                       {d.sessions.map((s,i) => (
-                        <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:8,padding:"8px 12px"}}>
-                          <div>
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:12,background:"var(--surface)",border:"1px solid var(--border2)",borderRadius:10,padding:"10px 12px"}}>
+                          {s.cover
+                            ? <img src={s.cover} alt="" style={{width:44,height:44,borderRadius:8,objectFit:"cover",flexShrink:0,background:"var(--bg2)"}}/>
+                            : <div style={{width:44,height:44,borderRadius:8,background:"var(--bg2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,flexShrink:0}}>📹</div>}
+                          <div style={{flex:1,minWidth:0}}>
                             <div style={{fontWeight:600,fontSize:13}}>{s.title || "(không có tiêu đề)"}</div>
                             <div style={{fontSize:11.5,color:"var(--text-muted)"}}>Bắt đầu: {s.startTime ? new Date(s.startTime).toLocaleString("vi-VN") : "—"}</div>
-                          </div>
-                          <div>
-                            {s.isTerminated
-                              ? <span className="badge-live" style={{color:"var(--red)",background:"rgba(239,68,68,0.1)",borderColor:"rgba(239,68,68,0.3)"}}>Đã chấm dứt</span>
-                              : s.isWarned
-                                ? <span className="badge-live" style={{color:"var(--orange)",background:"rgba(249,115,22,0.1)",borderColor:"rgba(249,115,22,0.3)"}}>Đã cảnh báo</span>
-                                : s.noViolation
-                                  ? <span className="badge-done">Không vi phạm</span>
-                                  : <span style={{fontSize:12,color:"var(--text-muted)"}}>—</span>}
+                            <div style={{fontSize:11.5,marginTop:2}}>
+                              <span style={{color:"var(--text-muted)"}}>Phạt: </span>
+                              {s.isTerminated
+                                ? <span style={{color:"var(--red)",fontWeight:600}}>Đã chấm dứt</span>
+                                : s.isWarned
+                                  ? <span style={{color:"var(--orange)",fontWeight:600}}>Đã cảnh báo</span>
+                                  : s.noViolation
+                                    ? <span style={{color:"var(--green)",fontWeight:600}}>Không vi phạm</span>
+                                    : <span style={{color:"var(--text-muted)"}}>—</span>}
+                            </div>
                           </div>
                         </div>
                       ))}

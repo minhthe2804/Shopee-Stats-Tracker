@@ -715,6 +715,7 @@ function mapViolationResult(account, raw) {
         policyLink: lh.detail?.policy_link || null,
         sessions: (lh.sessions || []).map((s) => ({
             title: s.title,
+            cover: s.cover || null,
             startTime: s.start_time,
             qcTime: s.qc_time,
             isTerminated: s.is_terminated,
