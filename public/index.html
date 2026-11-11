@@ -3000,39 +3000,66 @@
   }
 
   /* ══════════════════════════════════════
-     Thông báo "đơn nổ" — poll /api/new-orders mỗi 5s (server quét mỗi 1
-     phút), hiện toast góc trên-phải: +hoa hồng · mã đơn · tên sản phẩm.
-     Hoạt động xuyên suốt mọi tab vì đặt ở <App/>.
+     Thông báo "doanh thu mới" — lấy thẳng từ DỮ LIỆU PHIÊN LIVE (confirmedOrders/
+     confirmedSales của từng phiên, cùng nguồn với tab "Phiên Live"), KHÔNG phải
+     từ danh sách đơn hoa hồng (affiliate) của tab Hoa Hồng. Mỗi lần `data` (kết
+     quả /api/stats) được làm mới, so sánh với lần trước để phát hiện phiên nào
+     vừa tăng đơn xác nhận / doanh thu xác nhận rồi hiện toast góc trên-phải.
+     Hoạt động xuyên suốt mọi tab vì đặt ở <App/> (giữ ref so sánh không mất khi
+     đổi tab), nhưng chỉ HIỂN THỊ khi đang ở tab "Phiên Live" (active).
      ══════════════════════════════════════ */
-  function OrderToasts() {
+  function OrderToasts({ active, data }) {
     const [toasts, setToasts] = useState([]);
-    const sinceRef = useRef(Date.now()); // bỏ qua đơn phát hiện trước khi mở trang
+    // key "account::sessionId" -> {orders, sales} của lần quét trước, để tính phần tăng thêm
+    const prevRef = useRef({});
 
     useEffect(() => {
-      let stopped = false;
-      const poll = async () => {
-        try {
-          const res  = await fetch(`/api/new-orders?after=${sinceRef.current}`);
-          const json = await res.json();
-          if (stopped || !json.success || !json.items.length) return;
-          sinceRef.current = json.serverTime;
-          setToasts(prev => [...json.items, ...prev].slice(0, 20));
-          json.items.forEach(it => {
-            setTimeout(() => setToasts(prev => prev.filter(t => t.id !== it.id)), 8000);
-          });
-        } catch (e) { /* im lặng bỏ qua lỗi polling */ }
-      };
-      poll();
-      const id = setInterval(poll, 5000);
-      return () => { stopped = true; clearInterval(id); };
-    }, []);
+      if (!data || !data.length) return;
+      const fresh = [];
+      for (const acc of data) {
+        if (acc.error || !acc.sessions?.length) continue;
+        for (const s of acc.sessions) {
+          if (s.sessionId == null) continue;
+          const key = `${acc.key}::${s.sessionId}`;
+          const curOrders = s.confirmedOrders || 0;
+          const curSales  = s.confirmedSales  || 0;
+          const prev = prevRef.current[key];
+          // Chỉ so sánh từ lần quét THỨ HAI trở đi của phiên này — lần đầu thấy
+          // một phiên (vd vừa mở trang, hoặc phiên mới xuất hiện) chỉ ghi nhận
+          // mốc, không toast, để tránh dội thông báo "tăng" cho số liệu đã có
+          // sẵn từ trước khi mở trang.
+          if (prev && (curOrders > prev.orders || curSales > prev.sales)) {
+            fresh.push({
+              id:           `${key}-${curOrders}-${curSales}-${Date.now()}`,
+              account:      acc.key,
+              owner:        acc.owner,
+              sessionTitle: s.title || "Phiên live",
+              deltaOrders:  Math.max(curOrders - prev.orders, 0),
+              deltaSales:   Math.max(curSales  - prev.sales,  0),
+              totalOrders:  curOrders,
+              totalSales:   curSales,
+            });
+          }
+          prevRef.current[key] = { orders: curOrders, sales: curSales };
+        }
+      }
+      if (fresh.length) {
+        setToasts(prev => [...fresh, ...prev].slice(0, 20));
+        fresh.forEach(t => {
+          setTimeout(() => setToasts(prev => prev.filter(x => x.id !== t.id)), 8000);
+        });
+      }
+    }, [data]);
 
-    if (!toasts.length) return null;
+    if (!active || !toasts.length) return null;
     return <div style={{position:"fixed", top:16, right:16, zIndex:9999, display:"flex", flexDirection:"column", gap:8, maxWidth:300}}>
       {toasts.map(t => (
         <div key={t.id} style={{background:"var(--surface2)", border:"1px solid var(--green)", borderRadius:8, padding:"10px 12px", boxShadow:"0 6px 20px rgba(0,0,0,.35)", fontSize:12.5, color:"var(--text)", animation:"toastIn .2s ease-out"}}>
-          <div style={{fontWeight:700, color:"var(--green)"}}>+{fmtVND(t.itemValue)} · {t.orderId}</div>
-          {t.productName && <div style={{marginTop:2, color:"var(--text-muted)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{t.productName}</div>}
+          <div style={{fontWeight:800, color:"var(--green)", fontSize:13, marginBottom:4}}>🎉 ĐƠN NỔ RỒI CÁC CHÁU ƠI 🎉</div>
+          <div style={{fontWeight:700, color:"var(--green)"}}>
+            {t.deltaOrders>0 && <>+{fmtNum(t.deltaOrders)} đơn · </>}+{fmtVND(t.deltaSales)}
+          </div>
+          <div style={{marginTop:2, color:"var(--text-muted)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{t.sessionTitle}</div>
           <div style={{marginTop:2, fontSize:11, color:"var(--text-muted)"}}>{t.account}{t.owner?` · ${t.owner}`:""}</div>
         </div>
       ))}
@@ -3062,6 +3089,14 @@
 
     useEffect(() => { loadStats(); }, []);
 
+    // Tự làm mới /api/stats mỗi 30s (khớp với CACHE_TTL phía server) để phát
+    // hiện doanh thu/đơn xác nhận mới của phiên live gần như realtime, phục vụ
+    // toast "doanh thu mới" (OrderToasts) — không chỉ chờ người dùng bấm "Làm mới".
+    useEffect(() => {
+      const id = setInterval(() => { loadStats(); }, 30000);
+      return () => clearInterval(id);
+    }, [loadStats]);
+
     // Báo hiệu nhẹ trên tab "Điền Hoa Hồng Còn Thiếu": ngày hôm qua (ngày cron vừa đồng bộ
     // sáng nay) còn đang trống bao nhiêu tài khoản — không gọi API Shopee, chỉ
     // đọc sheet, nên không tốn chi phí. Lỗi (vd chưa có cột ngày đó) thì im lặng
@@ -3080,7 +3115,7 @@
     const liveCount = data.reduce((a,acc)=>a+(acc.sessions?.filter(s=>s.status===1).length||0),0);
 
     return <>
-      <OrderToasts/>
+      <OrderToasts active={tab==="live"} data={data}/>
       <header className="header">
         <div className="header-logo">🛒</div>
         <div>

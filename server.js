@@ -12,7 +12,6 @@ import fs from "fs";
 import { syncCommissionToSheet, syncCommissionToPhuTrachSheet, formatDayLabel, readPhuTrachHistory, readOwnersFromSheet, getMissingCommissionAccounts, fillMissingCommissionValues } from "./sheetSync.js";
 import { LiveCart, connectLiveCartDb, isLiveCartDbConnected } from "./liveCartModel.js";
 import { NotificationCookie, ViolationCookie } from "./cookieModels.js";
-import { NewOrder, connectNewOrderDb, isNewOrderDbConnected } from "./newOrderModel.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -29,7 +28,6 @@ app.use(express.json());
 const LIVE_CART_TOKEN = process.env.LIVE_CART_TOKEN || "";
 
 await connectLiveCartDb();
-await connectNewOrderDb();
 
 // ── Cảnh báo email khi phiên live sắp chạm 24h ───────────────────────────────
 // Cần set các biến môi trường SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
@@ -1281,103 +1279,6 @@ async function getCommissionForDate(dateStr, force = false) {
     commCache[cacheKey] = { data: results, at: Date.now() };
     return { data: results, fetchedAt: commCache[cacheKey].at, cached: false };
 }
-
-// ── Phát hiện "đơn nổ" (đơn mới) để báo trên dashboard ───────────────────────
-// Mỗi phút ép làm mới hoa hồng hôm nay (bỏ qua cache 60s) rồi thử insertMany
-// vào MongoDB (collection "newOrders", orderId có unique index) — đơn nào
-// insert được = THỰC SỰ mới, đơn nào trùng orderId (lỗi E11000) = đã biết,
-// Mongo tự loại bỏ. LƯU Ở MONGO (không phải RAM) nên không mất dữ liệu khi
-// server restart (quan trọng vì Render free tier hay sleep/cold-start) —
-// khác hẳn Set trong RAM trước đây, vốn mất sạch baseline mỗi lần restart.
-//
-// Lần chạy ĐẦU TIÊN (collection "newOrders" đang rỗng — mới deploy tính năng
-// hoặc DB mới) chỉ dùng để tạo baseline: vẫn insert toàn bộ đơn hôm nay vào
-// Mongo nhưng gắn detectedAt lùi về quá khứ xa (epoch) để KHÔNG hiện thành
-// thông báo trên dashboard (tránh báo dồn cả trăm đơn cùng lúc).
-async function checkNewOrders() {
-    if (!isNewOrderDbConnected()) { console.log("⏭️  [đơn mới] bỏ qua — chưa kết nối Mongo"); return; }
-
-    console.log("🔍 [đơn mới] bắt đầu quét...");
-    try {
-        const todayVN = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
-        const { data } = await getCommissionForDate(todayVN, true);
-
-        const existingCount = await NewOrder.estimatedDocumentCount();
-        const isFirstRun = existingCount === 0;
-
-        const docs = [];
-        let totalOrdersSeen = 0;
-        for (const acc of data) {
-            if (acc.error) continue;
-            for (const o of acc.orders || []) {
-                totalOrdersSeen++;
-                if (!o.orderId || o.status === 4) continue; // bỏ thiếu id / đơn huỷ
-                docs.push({
-                    orderId:     o.orderId,
-                    account:     acc.key,
-                    owner:       acc.owner || "",
-                    productName: o.productName || "",
-                    itemValue:   o.itemValue || 0,  // doanh thu đơn hàng (giá trị bán được)
-                    commission:  o.commission || 0, // hoa hồng — giữ để tham khảo
-                    source:      o.source,
-                    detectedAt:  isFirstRun ? new Date(0) : new Date(),
-                });
-            }
-        }
-        console.log(`🔍 [đơn mới] ${data.length} tài khoản, ${totalOrdersSeen} đơn hôm nay, ${docs.length} đơn hợp lệ, đã có sẵn ${existingCount} trong Mongo, isFirstRun=${isFirstRun}`);
-        if (!docs.length) { console.log("⏭️  [đơn mới] không có đơn nào để kiểm tra"); return; }
-
-        let insertedCount = docs.length;
-        try {
-            await NewOrder.insertMany(docs, { ordered: false });
-        } catch (err) {
-            if (!err.insertedDocs) { console.error("❌ [đơn mới] Lỗi lưu vào Mongo:", err.message); return; }
-            insertedCount = err.insertedDocs.length; // số đơn THỰC SỰ mới (phần còn lại trùng orderId, Mongo đã loại)
-        }
-        console.log(`🔍 [đơn mới] insert thành công ${insertedCount}/${docs.length} (phần còn lại trùng orderId đã có)`);
-        if (!isFirstRun && insertedCount > 0) {
-            console.log(`🟢 ${insertedCount} đơn mới được ghi nhận`);
-        }
-    } catch (err) {
-        console.error("❌ [đơn mới] Lỗi kiểm tra:", err.message);
-    }
-}
-
-// Quét mỗi 3 phút (KHÔNG để mỗi phút — mỗi lần quét ép fetch lại TOÀN BỘ hoa
-// hồng mọi tài khoản hôm nay, tốn ~45-50s cho ~2000 tài khoản; mỗi phút nghĩa
-// là server gần như chạy liên tục không nghỉ + gọi API Shopee dồn dập, dễ bị
-// Shopee giới hạn/khoá cookie). Đổi qua biến môi trường NEW_ORDER_CRON nếu
-// muốn nhanh/chậm hơn (cú pháp cron) — cân nhắc kỹ trước khi để dưới 2-3 phút.
-cron.schedule(process.env.NEW_ORDER_CRON || "*/3 * * * *", () => {
-    checkNewOrders();
-}, { timezone: "Asia/Ho_Chi_Minh" });
-
-// Dashboard poll liên tục endpoint này — ?after=<ms> trả về các đơn có
-// detectedAt mới hơn mốc thời gian đó, đọc thẳng từ Mongo.
-app.get("/api/new-orders", async (req, res) => {
-    if (!isNewOrderDbConnected()) return res.json({ success: true, items: [], serverTime: Date.now() });
-    try {
-        const after = Number(req.query.after) || 0;
-        const docs  = await NewOrder.find({ detectedAt: { $gt: new Date(after) } })
-            .sort({ detectedAt: -1 })
-            .limit(100)
-            .lean();
-        const items = docs.map(d => ({
-            id:          d._id,
-            account:     d.account,
-            owner:       d.owner,
-            orderId:     d.orderId,
-            productName: d.productName,
-            itemValue:   d.itemValue,
-            commission:  d.commission,
-            source:      d.source,
-            detectedAt:  d.detectedAt.getTime(),
-        }));
-        res.json({ success: true, items, serverTime: Date.now() });
-    } catch (err) {
-        res.status(500).json({ success: false, error: err.message });
-    }
-});
 
 app.get("/api/commission", async (req, res) => {
     try {
