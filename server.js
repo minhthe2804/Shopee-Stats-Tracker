@@ -1295,18 +1295,22 @@ async function getCommissionForDate(dateStr, force = false) {
 // Mongo nhưng gắn detectedAt lùi về quá khứ xa (epoch) để KHÔNG hiện thành
 // thông báo trên dashboard (tránh báo dồn cả trăm đơn cùng lúc).
 async function checkNewOrders() {
-    if (!isNewOrderDbConnected()) return; // thiếu NEW_ORDER_MONGODB_URI -> tính năng tự tắt, không ảnh hưởng phần khác
+    if (!isNewOrderDbConnected()) { console.log("⏭️  [đơn mới] bỏ qua — chưa kết nối Mongo"); return; }
 
+    console.log("🔍 [đơn mới] bắt đầu quét...");
     try {
         const todayVN = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
         const { data } = await getCommissionForDate(todayVN, true);
 
-        const isFirstRun = (await NewOrder.estimatedDocumentCount()) === 0;
+        const existingCount = await NewOrder.estimatedDocumentCount();
+        const isFirstRun = existingCount === 0;
 
         const docs = [];
+        let totalOrdersSeen = 0;
         for (const acc of data) {
             if (acc.error) continue;
             for (const o of acc.orders || []) {
+                totalOrdersSeen++;
                 if (!o.orderId || o.status === 4) continue; // bỏ thiếu id / đơn huỷ
                 docs.push({
                     orderId:     o.orderId,
@@ -1320,25 +1324,31 @@ async function checkNewOrders() {
                 });
             }
         }
-        if (!docs.length) return;
+        console.log(`🔍 [đơn mới] ${data.length} tài khoản, ${totalOrdersSeen} đơn hôm nay, ${docs.length} đơn hợp lệ, đã có sẵn ${existingCount} trong Mongo, isFirstRun=${isFirstRun}`);
+        if (!docs.length) { console.log("⏭️  [đơn mới] không có đơn nào để kiểm tra"); return; }
 
         let insertedCount = docs.length;
         try {
             await NewOrder.insertMany(docs, { ordered: false });
         } catch (err) {
-            if (!err.insertedDocs) { console.error("❌ Lỗi lưu đơn mới vào Mongo:", err.message); return; }
+            if (!err.insertedDocs) { console.error("❌ [đơn mới] Lỗi lưu vào Mongo:", err.message); return; }
             insertedCount = err.insertedDocs.length; // số đơn THỰC SỰ mới (phần còn lại trùng orderId, Mongo đã loại)
         }
+        console.log(`🔍 [đơn mới] insert thành công ${insertedCount}/${docs.length} (phần còn lại trùng orderId đã có)`);
         if (!isFirstRun && insertedCount > 0) {
             console.log(`🟢 ${insertedCount} đơn mới được ghi nhận`);
         }
     } catch (err) {
-        console.error("❌ Lỗi kiểm tra đơn mới:", err.message);
+        console.error("❌ [đơn mới] Lỗi kiểm tra:", err.message);
     }
 }
 
-// Quét mỗi phút. Có thể đổi qua biến môi trường NEW_ORDER_CRON (cú pháp cron).
-cron.schedule(process.env.NEW_ORDER_CRON || "* * * * *", () => {
+// Quét mỗi 3 phút (KHÔNG để mỗi phút — mỗi lần quét ép fetch lại TOÀN BỘ hoa
+// hồng mọi tài khoản hôm nay, tốn ~45-50s cho ~2000 tài khoản; mỗi phút nghĩa
+// là server gần như chạy liên tục không nghỉ + gọi API Shopee dồn dập, dễ bị
+// Shopee giới hạn/khoá cookie). Đổi qua biến môi trường NEW_ORDER_CRON nếu
+// muốn nhanh/chậm hơn (cú pháp cron) — cân nhắc kỹ trước khi để dưới 2-3 phút.
+cron.schedule(process.env.NEW_ORDER_CRON || "*/3 * * * *", () => {
     checkNewOrders();
 }, { timezone: "Asia/Ho_Chi_Minh" });
 
