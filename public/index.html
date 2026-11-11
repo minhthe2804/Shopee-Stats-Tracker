@@ -3018,6 +3018,7 @@
       const fresh = [];
       for (const acc of data) {
         if (acc.error || !acc.sessions?.length) continue;
+        if (!acc.owner) continue; // chỉ toast cho tài khoản đã được dán nhãn (gán owner)
         for (const s of acc.sessions) {
           if (s.sessionId == null) continue;
           const key = `${acc.key}::${s.sessionId}`;
