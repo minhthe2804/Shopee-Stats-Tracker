@@ -3090,11 +3090,12 @@
 
     useEffect(() => { loadStats(); }, []);
 
-    // Tự làm mới /api/stats mỗi 30s (khớp với CACHE_TTL phía server) để phát
-    // hiện doanh thu/đơn xác nhận mới của phiên live gần như realtime, phục vụ
-    // toast "doanh thu mới" (OrderToasts) — không chỉ chờ người dùng bấm "Làm mới".
+    // Tự làm mới /api/stats mỗi 10 phút để phát hiện doanh thu/đơn xác nhận mới
+    // của phiên live, phục vụ toast "doanh thu mới" (OrderToasts) — không chỉ
+    // chờ người dùng bấm "Làm mới". Giãn ra 10 phút (thay vì 30s) để giảm số
+    // lần gọi sang Shopee, tránh nguy cơ bị rate limit.
     useEffect(() => {
-      const id = setInterval(() => { loadStats(); }, 30000);
+      const id = setInterval(() => { loadStats(); }, 600000);
       return () => clearInterval(id);
     }, [loadStats]);
 
