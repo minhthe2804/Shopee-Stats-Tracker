@@ -9,6 +9,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
+    @keyframes toastIn { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:translateX(0); } }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --bg:          #0b0d12;
@@ -393,7 +394,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-  const { useState, useEffect, useMemo, useCallback } = React;
+  const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
   /* ── HELPERS ── */
   const fmtVND = v => v ? new Intl.NumberFormat("vi-VN").format(v) + " ₫" : "—";
@@ -2998,6 +2999,46 @@
     </>;
   }
 
+  /* ══════════════════════════════════════
+     Thông báo "đơn nổ" — poll /api/new-orders mỗi 5s (server quét mỗi 1
+     phút), hiện toast góc trên-phải: +hoa hồng · mã đơn · tên sản phẩm.
+     Hoạt động xuyên suốt mọi tab vì đặt ở <App/>.
+     ══════════════════════════════════════ */
+  function OrderToasts() {
+    const [toasts, setToasts] = useState([]);
+    const sinceRef = useRef(Date.now()); // bỏ qua đơn phát hiện trước khi mở trang
+
+    useEffect(() => {
+      let stopped = false;
+      const poll = async () => {
+        try {
+          const res  = await fetch(`/api/new-orders?after=${sinceRef.current}`);
+          const json = await res.json();
+          if (stopped || !json.success || !json.items.length) return;
+          sinceRef.current = json.serverTime;
+          setToasts(prev => [...json.items, ...prev].slice(0, 20));
+          json.items.forEach(it => {
+            setTimeout(() => setToasts(prev => prev.filter(t => t.id !== it.id)), 8000);
+          });
+        } catch (e) { /* im lặng bỏ qua lỗi polling */ }
+      };
+      poll();
+      const id = setInterval(poll, 5000);
+      return () => { stopped = true; clearInterval(id); };
+    }, []);
+
+    if (!toasts.length) return null;
+    return <div style={{position:"fixed", top:16, right:16, zIndex:9999, display:"flex", flexDirection:"column", gap:8, maxWidth:300}}>
+      {toasts.map(t => (
+        <div key={t.id} style={{background:"var(--surface2)", border:"1px solid var(--green)", borderRadius:8, padding:"10px 12px", boxShadow:"0 6px 20px rgba(0,0,0,.35)", fontSize:12.5, color:"var(--text)", animation:"toastIn .2s ease-out"}}>
+          <div style={{fontWeight:700, color:"var(--green)"}}>+{fmtVND(t.itemValue)} · {t.orderId}</div>
+          {t.productName && <div style={{marginTop:2, color:"var(--text-muted)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{t.productName}</div>}
+          <div style={{marginTop:2, fontSize:11, color:"var(--text-muted)"}}>{t.account}{t.owner?` · ${t.owner}`:""}</div>
+        </div>
+      ))}
+    </div>;
+  }
+
   function App() {
     const [tab,       setTab]      = useState("live");
     const [state,     setState]    = useState("loading");
@@ -3039,6 +3080,7 @@
     const liveCount = data.reduce((a,acc)=>a+(acc.sessions?.filter(s=>s.status===1).length||0),0);
 
     return <>
+      <OrderToasts/>
       <header className="header">
         <div className="header-logo">🛒</div>
         <div>
