@@ -874,6 +874,29 @@ function classifySource(o) {
 
 // filterFn (tuỳ chọn): nhận vào 1 checkout `o`, trả về true nếu muốn tính hoa
 // hồng của checkout đó. Không truyền filterFn → tính TẤT CẢ (hành vi cũ, không đổi).
+//
+// ── Chuẩn hoá trạng thái đơn ──────────────────────────────────────────
+// BUG ĐÃ PHÁT HIỆN: code cũ dùng `o.conversion_status` (số, ở cấp CHECKOUT)
+// rồi gán thẳng cho từng đơn con để hiển thị + lọc huỷ. Đối chiếu dữ liệu
+// thật từ Shopee thì conversion_status KHÔNG khớp với ý nghĩa đang gán ở
+// frontend (1:Chờ xác nhận, 2:Đã xác nhận, 3:Hoàn thành, 4:Đã huỷ):
+//   - checkout_status "Invalid"             + conversion_status=3 + order_status="CANCEL"    (đơn ĐÃ HUỶ)
+//   - checkout_status "Waiting for payment" + conversion_status=2 + order_status="COMPLETED" (đơn ĐÃ HOÀN THÀNH)
+// => đơn đã huỷ (status=3) bị hiển thị thành "Hoàn thành", đơn đã hoàn
+// thành (status=2) bị hiển thị thành "Đã xác nhận". Filter tab "Đã huỷ"
+// (chỉ lọc status===4) không bắt được đơn huỷ thật (status=3), còn filter
+// "Đã xác nhận" lại vô tình gộp luôn các đơn huỷ đó vào.
+// FIX: dùng field `order_status` ở CẤP ĐƠN (string "COMPLETED"/"CANCEL"...)
+// — Shopee trả về rõ nghĩa, không cần đoán số — thay vì suy diễn từ
+// conversion_status ở cấp checkout.
+function normalizeOrderStatus(ord, o) {
+    const raw = String(ord?.order_status || o?.checkout_status || "").toUpperCase();
+    if (raw.includes("CANCEL") || raw === "INVALID") return "cancelled";
+    if (raw.includes("RETURN")) return "returned";
+    if (raw === "COMPLETED") return "completed";
+    return "pending"; // UNPAID / TO_SHIP / TO_CONFIRM_RECEIVE / giá trị chưa gặp trong mẫu
+}
+
 function calcCommission(orders, filterFn = null) {
     // Cộng dồn giá trị THÔ (chưa làm tròn) trước, chỉ làm tròn 1 LẦN DUY NHẤT ở
     // cuối cùng — thay vì làm tròn từng đơn rồi mới cộng. Làm tròn riêng từng đơn
@@ -883,7 +906,11 @@ function calcCommission(orders, filterFn = null) {
     // dashboard của họ (xem lịch sử debug 594.089đ).
     let sumRaw = 0;
     for (const o of orders) {
-        if (o.conversion_status === 4) continue; // bỏ đơn huỷ
+        // Huỷ ở cấp checkout khi TẤT CẢ đơn con trong checkout đều bị huỷ/trả
+        // (dùng order_status từng đơn, không còn đoán theo conversion_status).
+        const allCancelled = (o.orders?.length ? o.orders : [null])
+            .every((ord) => { const s = normalizeOrderStatus(ord, o); return s === "cancelled" || s === "returned"; });
+        if (allCancelled) continue; // bỏ đơn huỷ
         if (filterFn && !filterFn(o)) continue;
         sumRaw += Number(o.linked_mcn_commission_rate) === 100000
             ? o.estimated_total_commission_with_mcn
@@ -930,7 +957,10 @@ async function fetchAccountCommission(account, start, end) {
         // === calcCommission(orders), tuyệt đối không lệch dù chỉ 1đ.
         const rawRows = [];
         for (const o of orders) {
-            const isCancelled = o.conversion_status === 4; // đồng bộ với calcCommission: bỏ đơn huỷ khỏi tổng
+            // Đồng bộ với calcCommission(): huỷ khi TẤT CẢ đơn con bị huỷ/trả
+            // (theo order_status từng đơn, không dùng conversion_status nữa).
+            const isCancelled = (o.orders?.length ? o.orders : [null])
+                .every((ord) => { const s = normalizeOrderStatus(ord, o); return s === "cancelled" || s === "returned"; });
             const commissionRaw = isCancelled
                 ? 0
                 : (Number(o.linked_mcn_commission_rate) === 100000
@@ -954,7 +984,7 @@ async function fetchAccountCommission(account, start, end) {
                     const firstItem = ord.items?.[0];
                     rawRows.push({
                         orderId:      ord.order_sn,
-                        status:       o.conversion_status,
+                        status:       normalizeOrderStatus(ord, o),
                         commissionRaw: shareRaw,
                         itemValue:    Math.round(itemValuesRaw[idx]),
                         purchaseTime: o.purchase_time,
@@ -969,7 +999,7 @@ async function fetchAccountCommission(account, start, end) {
                 // fallback nếu không có orders[]
                 rawRows.push({
                     orderId:      o.checkout_id || "",
-                    status:       o.conversion_status,
+                    status:       normalizeOrderStatus(null, o),
                     commissionRaw,
                     itemValue:    0,
                     purchaseTime: o.purchase_time,

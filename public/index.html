@@ -782,10 +782,14 @@
   }
 
   /* ── ORDER STATUS ── */
-  const ORDER_STATUS = { 1:"Chờ xác nhận", 2:"Đã xác nhận", 3:"Hoàn thành", 4:"Đã huỷ", 5:"Hoàn trả" };
+  // status giờ là string chuẩn hoá từ server (xem normalizeOrderStatus trong
+  // server.js) — lấy từ order_status CẤP ĐƠN của Shopee ("COMPLETED"/
+  // "CANCEL"/...), KHÔNG còn dùng conversion_status cấp checkout nữa (map số
+  // cũ 1-5 bị lệch với dữ liệu thật: đơn huỷ từng bị hiện thành "Hoàn thành").
+  const ORDER_STATUS = { completed:"Hoàn thành", cancelled:"Đã huỷ", returned:"Hoàn trả", pending:"Chờ xác nhận" };
   function OrderStatus({ status }) {
-    if (status === 4) return <span className="badge-cancelled">{ORDER_STATUS[status]||status}</span>;
-    if (status === 2 || status === 3) return <span className="badge-live" style={{color:"var(--green)"}}>{ORDER_STATUS[status]||status}</span>;
+    if (status === "cancelled" || status === "returned") return <span className="badge-cancelled">{ORDER_STATUS[status]||status}</span>;
+    if (status === "completed") return <span className="badge-live" style={{color:"var(--green)"}}>{ORDER_STATUS[status]||status}</span>;
     return <span className="badge-done">{ORDER_STATUS[status]||status}</span>;
   }
 
@@ -1403,8 +1407,8 @@
       if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
       if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
       if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
-      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === 4);
-      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== 4);
+      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === "cancelled");
+      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== "cancelled");
       if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
       return rows;
     }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, statusFilter, searchQ]);
@@ -1414,7 +1418,7 @@
         const rows = src === "all" ? preSourceFiltered
           : src === "other" ? preSourceFiltered.filter(o => o.source !== "video" && o.source !== "live")
           : preSourceFiltered.filter(o => o.source === src);
-        return { count: rows.length, comm: rows.reduce((s,o)=> s + (o.status!==4 ? (o.commission||0) : 0), 0) };
+        return { count: rows.length, comm: rows.reduce((s,o)=> s + (o.status!=="cancelled" ? (o.commission||0) : 0), 0) };
       };
       return { all: mk("all"), live: mk("live"), video: mk("video"), other: mk("other") };
     }, [preSourceFiltered]);
@@ -1430,8 +1434,8 @@
       if (sourceFilter === "video") rows = rows.filter(o => o.source === "video");
       if (sourceFilter === "live")  rows = rows.filter(o => o.source === "live");
       if (sourceFilter === "other") rows = rows.filter(o => o.source !== "video" && o.source !== "live");
-      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === 4);
-      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== 4);
+      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === "cancelled");
+      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== "cancelled");
       if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
       return [...rows].sort((a,b)=>{ const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
     }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ, sortField, sortDir]);
@@ -1443,7 +1447,7 @@
     const pageRows    = filtered.slice((currentPage-1)*PAGE_SIZE, currentPage*PAGE_SIZE);
 
     const summary = useMemo(() => {
-      const valid = filtered.filter(o => o.status !== 4);
+      const valid = filtered.filter(o => o.status !== "cancelled");
 
       // "Hoa hồng (hợp lệ)" — cộng số hoa hồng CHÍNH XÁC từ backend (đã cộng thô,
       // làm tròn 1 lần — xem calcCommission ở server.js) khi bộ lọc hiện tại bao
@@ -1459,7 +1463,7 @@
       for (const acc of data) {
         const matched = validByAccount[acc.key];
         if (!matched) continue;
-        const totalValidForAcc = (acc.orders || []).filter(o => o.status !== 4).length;
+        const totalValidForAcc = (acc.orders || []).filter(o => o.status !== "cancelled").length;
         filteredComm += matched.length === totalValidForAcc
           ? (acc.commission || 0)                                     // khớp trọn vẹn → dùng số chính xác
           : matched.reduce((a, o) => a + (o.commission || 0), 0);     // chỉ khớp 1 phần → cộng theo dòng
@@ -1471,7 +1475,7 @@
         totalCommLive:  data.reduce((a,acc)=>a+(acc.commissionLive||0),0),
         filteredComm,
         totalOrders:   filtered.length,
-        cancelled:     filtered.filter(o=>o.status===4).length,
+        cancelled:     filtered.filter(o=>o.status==="cancelled").length,
         accounts:      data.filter(a=>!a.error).length,
       };
     }, [data, filtered]);
