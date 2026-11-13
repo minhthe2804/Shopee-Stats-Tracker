@@ -1688,7 +1688,7 @@
             label={`Xuất Excel${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`}
             disabled={filtered.length===0}
             onClick={()=>{
-              const orderRow = (o) => ({
+              const rows = filtered.map(o => ({
                 "Tài khoản":         o._accountKey,
                 "Người phụ trách":   o._owner || "",
                 "PT Video":          o._ownerVideo || "",
@@ -1701,59 +1701,55 @@
                 "Thời gian mua":     fmtTime(o.purchaseTime),
                 "Thời gian Click":        fmtTime(o.clickTime),
                 "Thời gian hoàn thành":   fmtTime(o.completeTime),
-              });
-              // Gom đơn theo từng tài khoản (giữ nguyên thứ tự sắp xếp hiện tại
-              // bên trong mỗi acc), rồi chèn NGAY các dòng tổng theo nguồn
-              // (Live/Video/Khác + tổng acc) sau danh sách đơn của acc đó —
-              // tất cả trong CÙNG 1 sheet "Đơn hoa hồng".
-              const srcOf = (o) => o.source === "video" ? "video" : o.source === "live" ? "live" : "other";
-              const acctOrder = [];
+              }));
+              // Tổng theo nguồn CỦA TỪNG TÀI KHOẢN: mỗi acc tách riêng 3 cột
+              // Live/Video/Khác (đơn + hoa hồng hợp lệ, trừ đơn huỷ), dùng
+              // preSourceFiltered làm nền (tôn trọng bộ lọc TK/người phụ
+              // trách/trạng thái/tìm kiếm đang chọn, nhưng KHÔNG bị bó theo
+              // tab nguồn đang xem) để 1 acc luôn thấy đủ cả 3 nguồn.
               const byAccount = {};
-              for (const o of filtered) {
-                if (!byAccount[o._accountKey]) { byAccount[o._accountKey] = []; acctOrder.push(o._accountKey); }
-                byAccount[o._accountKey].push(o);
+              for (const o of preSourceFiltered) {
+                (byAccount[o._accountKey] ||= { owner: o._owner || "", ownerVideo: o._ownerVideo || "", orders: [] }).orders.push(o);
               }
-              const subtotalRow = (label, n, c) => ({
-                "Tài khoản": "", "Người phụ trách": "", "PT Video": "",
-                "Nguồn": label, "Mã đơn": "", "Sản phẩm": "", "Trạng thái": "",
-                "Giá trị đơn": "", "Hoa hồng": c,
-                "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": `${n} đơn`,
-              });
-              const rows = [];
-              const grand = { live:{n:0,c:0}, video:{n:0,c:0}, other:{n:0,c:0}, n:0, c:0 };
-              for (const key of acctOrder) {
-                const orders = byAccount[key];
-                const stat = { live:{n:0,c:0}, video:{n:0,c:0}, other:{n:0,c:0} };
-                for (const o of orders) {
-                  rows.push(orderRow(o));
-                  const s = stat[srcOf(o)], g = grand[srcOf(o)];
-                  s.n++; g.n++;
-                  if (o.status !== "cancelled") { s.c += (o.commission||0); g.c += (o.commission||0); grand.c += (o.commission||0); }
-                  grand.n++;
+              const srcOf = (o) => o.source === "video" ? "video" : o.source === "live" ? "live" : "other";
+              const accountRows = Object.keys(byAccount).sort().map(key => {
+                const acc = byAccount[key];
+                const stat = { live: {n:0,c:0}, video: {n:0,c:0}, other: {n:0,c:0} };
+                let totalN = 0, totalC = 0;
+                for (const o of acc.orders) {
+                  totalN++;
+                  const s = stat[srcOf(o)];
+                  s.n++;
+                  if (o.status !== "cancelled") { s.c += (o.commission||0); totalC += (o.commission||0); }
                 }
-                if (stat.live.n)  rows.push(subtotalRow("🔴 Tổng Live",  stat.live.n,  stat.live.c));
-                if (stat.video.n) rows.push(subtotalRow("🎬 Tổng Video", stat.video.n, stat.video.c));
-                if (stat.other.n) rows.push(subtotalRow("Tổng Khác",     stat.other.n, stat.other.c));
-                rows.push({
-                  "Tài khoản": `TỔNG ${key}`, "Người phụ trách": "", "PT Video": "",
-                  "Nguồn": "", "Mã đơn": "", "Sản phẩm": "", "Trạng thái": "",
-                  "Giá trị đơn": "", "Hoa hồng": stat.live.c + stat.video.c + stat.other.c,
-                  "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": `${orders.length} đơn`,
-                });
-                rows.push({}); // dòng trống ngăn cách giữa các acc
-              }
-              rows.push(subtotalRow("🔴 TỔNG LIVE (tất cả TK)",  grand.live.n,  grand.live.c));
-              rows.push(subtotalRow("🎬 TỔNG VIDEO (tất cả TK)", grand.video.n, grand.video.c));
-              rows.push(subtotalRow("TỔNG KHÁC (tất cả TK)",     grand.other.n, grand.other.c));
-              rows.push({
-                "Tài khoản": "TỔNG CỘNG TẤT CẢ TK", "Người phụ trách": "", "PT Video": "",
-                "Nguồn": "", "Mã đơn": "", "Sản phẩm": "", "Trạng thái": "",
-                "Giá trị đơn": "", "Hoa hồng": grand.c,
-                "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": `${grand.n} đơn`,
+                return {
+                  "Tài khoản":       key,
+                  "Người phụ trách": acc.owner,
+                  "PT Video":        acc.ownerVideo,
+                  "Đơn Live":        stat.live.n,
+                  "HH Live":         stat.live.c,
+                  "Đơn Video":       stat.video.n,
+                  "HH Video":        stat.video.c,
+                  "Đơn Khác":        stat.other.n,
+                  "HH Khác":         stat.other.c,
+                  "Tổng đơn":        totalN,
+                  "Tổng HH":         totalC,
+                };
               });
+              const totalRow = {
+                "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "", "PT Video": "",
+                "Đơn Live":  accountRows.reduce((s,r)=>s+r["Đơn Live"],0),
+                "HH Live":   accountRows.reduce((s,r)=>s+r["HH Live"],0),
+                "Đơn Video": accountRows.reduce((s,r)=>s+r["Đơn Video"],0),
+                "HH Video":  accountRows.reduce((s,r)=>s+r["HH Video"],0),
+                "Đơn Khác":  accountRows.reduce((s,r)=>s+r["Đơn Khác"],0),
+                "HH Khác":   accountRows.reduce((s,r)=>s+r["HH Khác"],0),
+                "Tổng đơn":  accountRows.reduce((s,r)=>s+r["Tổng đơn"],0),
+                "Tổng HH":   accountRows.reduce((s,r)=>s+r["Tổng HH"],0),
+              };
               const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
               const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
-              downloadWorkbook([["Đơn hoa hồng", rows]], fname);
+              downloadWorkbook([["Đơn hoa hồng", rows], ["Tổng theo nguồn - theo TK", [...accountRows, totalRow]]], fname);
             }}
           />
           {mode==="range" && <ExportBtn label={`Xuất tổng theo TK${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`} disabled={data.length===0} onClick={()=>{
