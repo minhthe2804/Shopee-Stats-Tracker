@@ -1702,9 +1702,31 @@
                 "Thời gian Click":        fmtTime(o.clickTime),
                 "Thời gian hoàn thành":   fmtTime(o.completeTime),
               }));
+              // Sum riêng cho từng nguồn (Live/Video/Khác) + tổng cộng, dựa trên
+              // ĐÚNG tập đơn đang xuất (filtered) — nếu đang ở 1 tab nguồn cụ
+              // thể thì các nguồn khác sẽ ra 0 đơn, đúng với dữ liệu đang xem.
+              const bySource = (src) => src === "all" ? filtered
+                : src === "other" ? filtered.filter(o => o.source !== "video" && o.source !== "live")
+                : filtered.filter(o => o.source === src);
+              const sumRow = (src, label) => {
+                const list = bySource(src);
+                const valid = list.filter(o => o.status !== "cancelled");
+                return {
+                  "Nguồn":                 label,
+                  "Tổng đơn":              list.length,
+                  "Đơn hợp lệ (trừ huỷ)":  valid.length,
+                  "Tổng hoa hồng (hợp lệ)": valid.reduce((s,o)=>s+(o.commission||0),0),
+                };
+              };
+              const summaryRows = [
+                sumRow("live",  "🔴 Shopee Live"),
+                sumRow("video", "🎬 Shopee Video"),
+                sumRow("other", "Khác"),
+                sumRow("all",   "TỔNG CỘNG"),
+              ];
               const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
               const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
-              downloadWorkbook([["Đơn hoa hồng", rows]], fname);
+              downloadWorkbook([["Đơn hoa hồng", rows], ["Tổng theo nguồn", summaryRows]], fname);
             }}
           />
           {mode==="range" && <ExportBtn label={`Xuất tổng theo TK${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`} disabled={data.length===0} onClick={()=>{
