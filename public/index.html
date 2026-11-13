@@ -8,6 +8,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <style>
     @keyframes toastIn { from { opacity:0; transform:translateX(16px); } to { opacity:1; transform:translateX(0); } }
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -448,6 +449,50 @@
   }
   const ExportBtn = ({ onClick, label="Xuất Excel", disabled=false }) =>
     <button className="reset-btn" style={{color:"var(--green)"}} onClick={onClick} disabled={disabled}>📤 {label}</button>;
+
+  // Xuất Excel có style (bold / tô màu / freeze header) cho các sheet có TRỘN
+  // dòng chi tiết với nhiều cấp dòng tổng (Tổng theo nguồn trong TK / Tổng TK /
+  // Tổng toàn bộ theo nguồn / Tổng cộng) — để người mở file phân biệt được
+  // ngay dòng nào là đơn thật, dòng nào là dòng tổng, không phải đọc từng ô.
+  // rowsWithType: mỗi row có thêm field "_type" (không xuất ra cột):
+  //   "order" | "acc_subtotal" | "acc_total" | "grand_subtotal" | "grand_total"
+  async function downloadStyledWorkbook(sheetName, columns, rowsWithType, filename) {
+    if (typeof ExcelJS === "undefined") { alert("Không tải được thư viện xuất Excel (ExcelJS). Kiểm tra kết nối mạng rồi thử lại."); return; }
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet((sheetName || "Sheet1").slice(0, 31));
+    ws.columns = columns;
+    ws.views = [{ state: "frozen", ySplit: 1 }]; // ghim dòng tiêu đề khi cuộn
+    const header = ws.getRow(1);
+    header.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2F3B52" } };
+    header.alignment = { vertical: "middle" };
+
+    const ROW_STYLE = {
+      acc_subtotal:   { font: { bold: true },             fill: "FFE8ECF4" },
+      acc_total:      { font: { bold: true },              fill: "FFD3DCEE", borderBottom: "medium" },
+      grand_subtotal: { font: { bold: true },              fill: "FFFFE9B3" },
+      grand_total:    { font: { bold: true, size: 12 },    fill: "FFFFD166" },
+    };
+
+    for (const r of rowsWithType) {
+      const { _type, ...data } = r;
+      const row = ws.addRow(data);
+      const st = ROW_STYLE[_type];
+      if (st) {
+        row.eachCell({ includeEmpty: true }, cell => {
+          cell.font = st.font;
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: st.fill } };
+          if (st.borderBottom) cell.border = { bottom: { style: st.borderBottom } };
+        });
+      }
+    }
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
 
   // YYYY-MM-DD offset by days
   const offsetDate = (base, days) => {
@@ -1687,69 +1732,90 @@
           <ExportBtn
             label={`Xuất Excel${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`}
             disabled={filtered.length===0}
-            onClick={()=>{
-              const rows = filtered.map(o => ({
+            onClick={async ()=>{
+              // Cột cố định — "Nguồn" LUÔN chỉ chứa Shopee Video/Shopee Live/Khác
+              // (không bao giờ bị nhồi nhãn "Tổng..."); mọi dòng tổng được đánh
+              // dấu riêng ở cột "Loại dòng" và đếm số đơn ở cột "Số đơn" riêng
+              // (không tận dụng lại cột "Thời gian hoàn thành" như trước) — để
+              // người mở file không lẫn dòng tổng với dòng đơn thật.
+              const COLUMNS = [
+                { header: "Tài khoản",            key: "Tài khoản",            width: 20 },
+                { header: "Người phụ trách",      key: "Người phụ trách",      width: 14 },
+                { header: "PT Video",             key: "PT Video",             width: 12 },
+                { header: "Nguồn",                key: "Nguồn",                width: 12 },
+                { header: "Loại dòng",             key: "Loại dòng",            width: 22 },
+                { header: "Mã đơn",                key: "Mã đơn",               width: 16 },
+                { header: "Sản phẩm",              key: "Sản phẩm",             width: 45 },
+                { header: "Trạng thái",            key: "Trạng thái",           width: 12 },
+                { header: "Giá trị đơn",           key: "Giá trị đơn",          width: 12 },
+                { header: "Hoa hồng",              key: "Hoa hồng",             width: 12 },
+                { header: "Số đơn",                key: "Số đơn",               width: 9  },
+                { header: "Thời gian mua",         key: "Thời gian mua",        width: 16 },
+                { header: "Thời gian Click",       key: "Thời gian Click",      width: 16 },
+                { header: "Thời gian hoàn thành",  key: "Thời gian hoàn thành", width: 16 },
+              ];
+              const srcLabel = (o) => o.source === "video" ? "Shopee Video" : o.source === "live" ? "Shopee Live" : "Khác";
+              const orderRow = (o) => ({
+                _type: "order",
                 "Tài khoản":         o._accountKey,
                 "Người phụ trách":   o._owner || "",
                 "PT Video":          o._ownerVideo || "",
-                "Nguồn":             o.source === "video" ? "Shopee Video" : o.source === "live" ? "Shopee Live" : "Khác",
+                "Nguồn":             srcLabel(o),
+                "Loại dòng":         "Đơn hàng",
                 "Mã đơn":            o.orderId || "",
                 "Sản phẩm":          o.productName || "",
                 "Trạng thái":        ORDER_STATUS[o.status] || o.status || "",
                 "Giá trị đơn":       o.itemValue || 0,
                 "Hoa hồng":          o.commission || 0,
+                "Số đơn":            "",
                 "Thời gian mua":     fmtTime(o.purchaseTime),
                 "Thời gian Click":        fmtTime(o.clickTime),
                 "Thời gian hoàn thành":   fmtTime(o.completeTime),
-              }));
-              // Tổng theo nguồn CỦA TỪNG TÀI KHOẢN: mỗi acc tách riêng 3 cột
-              // Live/Video/Khác (đơn + hoa hồng hợp lệ, trừ đơn huỷ), dùng
-              // preSourceFiltered làm nền (tôn trọng bộ lọc TK/người phụ
-              // trách/trạng thái/tìm kiếm đang chọn, nhưng KHÔNG bị bó theo
-              // tab nguồn đang xem) để 1 acc luôn thấy đủ cả 3 nguồn.
-              const byAccount = {};
-              for (const o of preSourceFiltered) {
-                (byAccount[o._accountKey] ||= { owner: o._owner || "", ownerVideo: o._ownerVideo || "", orders: [] }).orders.push(o);
-              }
-              const srcOf = (o) => o.source === "video" ? "video" : o.source === "live" ? "live" : "other";
-              const accountRows = Object.keys(byAccount).sort().map(key => {
-                const acc = byAccount[key];
-                const stat = { live: {n:0,c:0}, video: {n:0,c:0}, other: {n:0,c:0} };
-                let totalN = 0, totalC = 0;
-                for (const o of acc.orders) {
-                  totalN++;
-                  const s = stat[srcOf(o)];
-                  s.n++;
-                  if (o.status !== "cancelled") { s.c += (o.commission||0); totalC += (o.commission||0); }
-                }
-                return {
-                  "Tài khoản":       key,
-                  "Người phụ trách": acc.owner,
-                  "PT Video":        acc.ownerVideo,
-                  "Đơn Live":        stat.live.n,
-                  "HH Live":         stat.live.c,
-                  "Đơn Video":       stat.video.n,
-                  "HH Video":        stat.video.c,
-                  "Đơn Khác":        stat.other.n,
-                  "HH Khác":         stat.other.c,
-                  "Tổng đơn":        totalN,
-                  "Tổng HH":         totalC,
-                };
               });
-              const totalRow = {
-                "Tài khoản": "TỔNG CỘNG", "Người phụ trách": "", "PT Video": "",
-                "Đơn Live":  accountRows.reduce((s,r)=>s+r["Đơn Live"],0),
-                "HH Live":   accountRows.reduce((s,r)=>s+r["HH Live"],0),
-                "Đơn Video": accountRows.reduce((s,r)=>s+r["Đơn Video"],0),
-                "HH Video":  accountRows.reduce((s,r)=>s+r["HH Video"],0),
-                "Đơn Khác":  accountRows.reduce((s,r)=>s+r["Đơn Khác"],0),
-                "HH Khác":   accountRows.reduce((s,r)=>s+r["HH Khác"],0),
-                "Tổng đơn":  accountRows.reduce((s,r)=>s+r["Tổng đơn"],0),
-                "Tổng HH":   accountRows.reduce((s,r)=>s+r["Tổng HH"],0),
-              };
+              // Gom đơn theo từng tài khoản (giữ nguyên thứ tự sắp xếp hiện tại
+              // bên trong mỗi acc), rồi chèn NGAY các dòng tổng theo nguồn
+              // (Live/Video/Khác + tổng acc) sau danh sách đơn của acc đó —
+              // tất cả trong CÙNG 1 sheet "Đơn hoa hồng", nhưng mỗi cấp tổng có
+              // _type riêng để tô đậm/tô màu phân biệt khi xuất.
+              const srcOf = (o) => o.source === "video" ? "video" : o.source === "live" ? "live" : "other";
+              const acctOrder = [];
+              const byAccount = {};
+              for (const o of filtered) {
+                if (!byAccount[o._accountKey]) { byAccount[o._accountKey] = []; acctOrder.push(o._accountKey); }
+                byAccount[o._accountKey].push(o);
+              }
+              const totalish = (_type, key, nguon, loai, n, c) => ({
+                _type,
+                "Tài khoản": key, "Người phụ trách": "", "PT Video": "",
+                "Nguồn": nguon, "Loại dòng": loai,
+                "Mã đơn": "", "Sản phẩm": "", "Trạng thái": "",
+                "Giá trị đơn": "", "Hoa hồng": c, "Số đơn": n,
+                "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": "",
+              });
+              const rows = [];
+              const grand = { live:{n:0,c:0}, video:{n:0,c:0}, other:{n:0,c:0}, n:0, c:0 };
+              for (const key of acctOrder) {
+                const orders = byAccount[key];
+                const stat = { live:{n:0,c:0}, video:{n:0,c:0}, other:{n:0,c:0} };
+                for (const o of orders) {
+                  rows.push(orderRow(o));
+                  const s = stat[srcOf(o)], g = grand[srcOf(o)];
+                  s.n++; g.n++;
+                  if (o.status !== "cancelled") { s.c += (o.commission||0); g.c += (o.commission||0); grand.c += (o.commission||0); }
+                  grand.n++;
+                }
+                if (stat.live.n)  rows.push(totalish("acc_subtotal", key, "Shopee Live",  "Tổng theo nguồn (trong TK)", stat.live.n,  stat.live.c));
+                if (stat.video.n) rows.push(totalish("acc_subtotal", key, "Shopee Video", "Tổng theo nguồn (trong TK)", stat.video.n, stat.video.c));
+                if (stat.other.n) rows.push(totalish("acc_subtotal", key, "Khác",         "Tổng theo nguồn (trong TK)", stat.other.n, stat.other.c));
+                rows.push(totalish("acc_total", key, "", "TỔNG TÀI KHOẢN", orders.length, stat.live.c + stat.video.c + stat.other.c));
+              }
+              rows.push(totalish("grand_subtotal", "(Tất cả TK)", "Shopee Live",  "Tổng toàn bộ theo nguồn", grand.live.n,  grand.live.c));
+              rows.push(totalish("grand_subtotal", "(Tất cả TK)", "Shopee Video", "Tổng toàn bộ theo nguồn", grand.video.n, grand.video.c));
+              rows.push(totalish("grand_subtotal", "(Tất cả TK)", "Khác",         "Tổng toàn bộ theo nguồn", grand.other.n, grand.other.c));
+              rows.push(totalish("grand_total", "(Tất cả TK)", "", "TỔNG CỘNG TẤT CẢ TK", grand.n, grand.c));
               const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
               const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
-              downloadWorkbook([["Đơn hoa hồng", rows], ["Tổng theo nguồn - theo TK", [...accountRows, totalRow]]], fname);
+              await downloadStyledWorkbook("Đơn hoa hồng", COLUMNS, rows, fname);
             }}
           />
           {mode==="range" && <ExportBtn label={`Xuất tổng theo TK${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`} disabled={data.length===0} onClick={()=>{
