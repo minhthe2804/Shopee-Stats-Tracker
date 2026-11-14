@@ -98,6 +98,7 @@
     .source-badge.video { color:var(--purple); background:var(--purple-dim); border:1px solid rgba(168,85,247,0.3); }
     .source-badge.live  { color:var(--blue); background:rgba(59,130,246,0.12); border:1px solid rgba(59,130,246,0.3); }
     .source-badge.other { color:var(--text-muted); background:var(--surface2); border:1px solid var(--border2); }
+    .source-badge.mcn   { color:#14b8a6; background:rgba(20,184,166,0.12); border:1px solid rgba(20,184,166,0.3); }
     .summary-card {
       background:var(--surface); border:1px solid var(--border);
       border-radius:var(--radius); padding:16px 18px; transition:border-color 0.15s;
@@ -472,6 +473,7 @@
       acc_total:      { font: { bold: true },              fill: "FFD3DCEE", borderBottom: "medium" },
       grand_subtotal: { font: { bold: true },              fill: "FFFFE9B3" },
       grand_total:    { font: { bold: true, size: 12 },    fill: "FFFFD166" },
+      acc_error:      { font: { bold: true, color: { argb: "FF8B0000" } }, fill: "FFF8D7DA" },
     };
 
     for (const r of rowsWithType) {
@@ -850,6 +852,10 @@
           : order.source === "live"
           ? <span className="source-badge live" style={{marginTop:4}}>🔴 Live</span>
           : <span className="source-badge other" style={{marginTop:4}}>Khác</span>}
+        {/* Đánh dấu MCN (nếu đơn có gắn MCN) — tên lấy từ linked_mcn_name,
+            % lấy từ linked_mcn_commission_rate (rate/100000 = tỉ lệ 0-1,
+            dùng lại đúng fmtPct đang có sẵn). */}
+        {order.mcnName && <span className="source-badge mcn" style={{marginTop:4}} title={`MCN: ${order.mcnName}`}>🏷️ {order.mcnName} · {fmtPct(order.mcnRate!=null ? Number(order.mcnRate)/100000 : null)}</span>}
       </td>
       <td><OrderStatus status={order.status}/></td>
       <td className="num right">{fmtVND(order.itemValue)}</td>
@@ -1749,6 +1755,8 @@
                 { header: "Trạng thái",            key: "Trạng thái",           width: 12 },
                 { header: "Giá trị đơn",           key: "Giá trị đơn",          width: 12 },
                 { header: "Hoa hồng",              key: "Hoa hồng",             width: 12 },
+                { header: "MCN",                   key: "MCN",                  width: 16 },
+                { header: "% MCN",                 key: "% MCN",                width: 9  },
                 { header: "Số đơn",                key: "Số đơn",               width: 9  },
                 { header: "Thời gian mua",         key: "Thời gian mua",        width: 16 },
                 { header: "Thời gian Click",       key: "Thời gian Click",      width: 16 },
@@ -1767,6 +1775,8 @@
                 "Trạng thái":        ORDER_STATUS[o.status] || o.status || "",
                 "Giá trị đơn":       o.itemValue || 0,
                 "Hoa hồng":          o.commission || 0,
+                "MCN":               o.mcnName || "",
+                "% MCN":             o.mcnRate != null ? `${(Number(o.mcnRate) / 1000).toFixed(1)}%` : "",
                 "Số đơn":            "",
                 "Thời gian mua":     fmtTime(o.purchaseTime),
                 "Thời gian Click":        fmtTime(o.clickTime),
@@ -1789,7 +1799,7 @@
                 "Tài khoản": key, "Người phụ trách": "", "PT Video": "",
                 "Nguồn": nguon, "Loại dòng": loai,
                 "Mã đơn": "", "Sản phẩm": "", "Trạng thái": "",
-                "Giá trị đơn": "", "Hoa hồng": c, "Số đơn": n,
+                "Giá trị đơn": "", "Hoa hồng": c, "MCN": "", "% MCN": "", "Số đơn": n,
                 "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": "",
               });
               const rows = [];
@@ -1813,6 +1823,30 @@
               rows.push(totalish("grand_subtotal", "(Tất cả TK)", "Shopee Video", "Tổng toàn bộ theo nguồn", grand.video.n, grand.video.c));
               rows.push(totalish("grand_subtotal", "(Tất cả TK)", "Khác",         "Tổng toàn bộ theo nguồn", grand.other.n, grand.other.c));
               rows.push(totalish("grand_total", "(Tất cả TK)", "", "TỔNG CỘNG TẤT CẢ TK", grand.n, grand.c));
+              // Tài khoản lỗi cookie (không lấy được dữ liệu nên KHÔNG có đơn
+              // nào ở trên, cũng không nằm trong acctOrder) — liệt kê rõ ra ở
+              // cuối sheet để không bị hiểu nhầm là "tài khoản không phát sinh
+              // đơn"; cùng cách báo lỗi với cột "Trạng thái" ở "Xuất tổng theo
+              // TK" (acc.error ? `Lỗi: ${acc.error}` : "OK"), tôn trọng cùng bộ
+              // lọc tài khoản/người phụ trách đang chọn (không áp sourceFilter
+              // vì lỗi cookie không thuộc về 1 nguồn cụ thể nào).
+              // Cũng bỏ acc chưa gán người phụ trách, giống hệt điều kiện đang
+              // áp cho toàn bộ đơn ở trên (dòng filter `o._owner` của `filtered`)
+              // — tránh liệt kê 1 acc lỗi cookie nhưng lại chưa ai phụ trách.
+              let errAccounts = data.filter(a => a.error && a.owner);
+              if (activeAccount !== "all")   errAccounts = errAccounts.filter(a=>a.key===activeAccount);
+              if (ownerFilter !== "all")      errAccounts = errAccounts.filter(a=>a.owner===ownerFilter);
+              if (ownerVideoFilter !== "all") errAccounts = errAccounts.filter(a=>a.ownerVideo===ownerVideoFilter);
+              for (const acc of errAccounts) {
+                rows.push({
+                  _type: "acc_error",
+                  "Tài khoản": acc.key, "Người phụ trách": acc.owner || "", "PT Video": acc.ownerVideo || "",
+                  "Nguồn": "", "Loại dòng": "⚠ TÀI KHOẢN LỖI (không lấy được dữ liệu)",
+                  "Mã đơn": "", "Sản phẩm": acc.error || "", "Trạng thái": "Lỗi cookie",
+                  "Giá trị đơn": "", "Hoa hồng": "", "MCN": "", "% MCN": "", "Số đơn": "",
+                  "Thời gian mua": "", "Thời gian Click": "", "Thời gian hoàn thành": "",
+                });
+              }
               const suffix = sourceFilter!=="all" ? `_${sourceFilter}` : "";
               const fname = mode==="day" ? `hoa-hong${suffix}_${date}.xlsx` : `hoa-hong${suffix}_${rangeFrom}_${rangeTo}.xlsx`;
               await downloadStyledWorkbook("Đơn hoa hồng", COLUMNS, rows, fname);

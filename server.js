@@ -992,6 +992,7 @@ async function fetchAccountCommission(account, start, end) {
                         completeTime: o.checkout_complete_time,
                         productName:  firstItem?.item_name || "",
                         mcnRate:      o.linked_mcn_commission_rate,
+                        mcnName:      o.linked_mcn_name || "",
                         source,
                     });
                 });
@@ -1007,6 +1008,7 @@ async function fetchAccountCommission(account, start, end) {
                     completeTime: o.checkout_complete_time,
                     productName:  "",
                     mcnRate:      o.linked_mcn_commission_rate,
+                    mcnName:      o.linked_mcn_name || "",
                     source,
                 });
             }
@@ -1060,6 +1062,7 @@ async function fetchAccountCommission(account, start, end) {
             completeTime: r.completeTime,
             productName:  r.productName,
             mcnRate:      r.mcnRate,
+            mcnName:      r.mcnName,
             source:       r.source,
         }));
 
