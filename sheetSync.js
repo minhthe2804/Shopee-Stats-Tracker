@@ -263,8 +263,11 @@ export async function readOwnersFromSheet(
 
     // Cột GIỎ (tuỳ chọn) — số giỏ hàng của từng tài khoản (100 / 500 ...)
     const cartColIdx0 = row1Values.findIndex((h) => String(h || "").trim().toUpperCase() === "GIỎ");
-    const lo = Math.min(accountColIdx0, ownerColIdx0, cartColIdx0 === -1 ? Infinity : cartColIdx0);
-    const hi = Math.max(accountColIdx0, ownerColIdx0, cartColIdx0);
+    // Cột NHÓM ZALO (tuỳ chọn) — tên/mã nhóm Zalo của từng tài khoản, chỉ để
+    // hiển thị/lọc trên dashboard, không dùng để tính toán gì.
+    const zaloColIdx0 = row1Values.findIndex((h) => String(h || "").trim().toUpperCase() === "NHÓM ZALO");
+    const lo = Math.min(accountColIdx0, ownerColIdx0, cartColIdx0 === -1 ? Infinity : cartColIdx0, zaloColIdx0 === -1 ? Infinity : zaloColIdx0);
+    const hi = Math.max(accountColIdx0, ownerColIdx0, cartColIdx0, zaloColIdx0);
     const res = await sheets.spreadsheets.values.get({
         spreadsheetId: SPREADSHEET_ID,
         range: `${tabName}!${colLetter(lo + 1)}2:${colLetter(hi + 1)}`,
@@ -273,9 +276,11 @@ export async function readOwnersFromSheet(
     const relAccountIdx = accountColIdx0 - lo;
     const relOwnerIdx   = ownerColIdx0 - lo;
     const relCartIdx    = cartColIdx0 === -1 ? -1 : cartColIdx0 - lo;
+    const relZaloIdx     = zaloColIdx0 === -1 ? -1 : zaloColIdx0 - lo;
 
     const map = {};
     const carts = {};
+    const zalos = {};
     let skipped = 0;
     for (const row of rows) {
         const account = (row[relAccountIdx] || "").trim();
@@ -284,8 +289,9 @@ export async function readOwnersFromSheet(
         if (isPlaceholderAccountValue(account) || isPlaceholderOwnerValue(owner)) { skipped++; continue; }
         map[account] = owner;
         if (relCartIdx !== -1) { const c = String(row[relCartIdx] ?? "").trim(); if (c) carts[account] = c; }
+        if (relZaloIdx !== -1) { const z = String(row[relZaloIdx] ?? "").trim(); if (z) zalos[account] = z; }
     }
-    return { map, carts, count: Object.keys(map).length, skipped, cartColFound: cartColIdx0 !== -1 };
+    return { map, carts, zalos, count: Object.keys(map).length, skipped, cartColFound: cartColIdx0 !== -1, zaloColFound: zaloColIdx0 !== -1 };
 }
 
 

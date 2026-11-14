@@ -538,7 +538,7 @@
 
   /* ── ACCOUNT CARD (live) ── */
   function AccountCard({ account, active, onClick }) {
-    const { key, error, sessions=[], owner } = account;
+    const { key, error, sessions=[], owner, zalo } = account;
     const liveCount = sessions.filter(s => s.status === 1).length;
     return <div className={`account-card ${active?"active":""} ${error?"error-card":""}`} onClick={onClick} title={active?"Bỏ lọc":"Lọc theo tài khoản này"}>
       <div className="card-header">
@@ -546,7 +546,10 @@
         <div className="card-name">{key}</div>
         {liveCount > 0 && <span className="live-badge">{liveCount} LIVE</span>}
       </div>
-      {owner && <div style={{fontSize:11,color:"var(--text-muted)",marginTop:-8,marginBottom:10}}>👤 {owner}</div>}
+      {(owner||zalo) && <div style={{fontSize:11,color:"var(--text-muted)",marginTop:-8,marginBottom:10,display:"flex",gap:6,flexWrap:"wrap"}}>
+        {owner && <span>👤 {owner}</span>}
+        {zalo  && <span className="source-badge live">💬 {zalo}</span>}
+      </div>}
       {error ? <div className="card-error">⚠ {error}</div> : (
         <div className="card-stats">
           <div><div className="card-stat-label">Phiên live</div><div className="card-stat-value">{sessions.length}</div></div>
@@ -582,10 +585,10 @@
   }
 
   /* ── SESSION ROW ── */
-  function SessionRow({ session, accountKey, owner, cart, onOpenProducts, onToggleCompare, compareActive, hasPrev }) {
+  function SessionRow({ session, accountKey, owner, cart, zalo, onOpenProducts, onToggleCompare, compareActive, hasPrev }) {
     const isLive = session.status === 1;
     return <tr>
-      <td><span className="account-tag">{accountKey}</span>{(owner||cart)&&<div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{owner||"Chưa gán"}{cart?` · 🛒 ${cart}`:""}</div>}</td>
+      <td><span className="account-tag">{accountKey}</span>{(owner||cart||zalo)&&<div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{owner||"Chưa gán"}{cart?` · 🛒 ${cart}`:""}{zalo?` · 💬 ${zalo}`:""}</div>}</td>
       <td style={{maxWidth:220}}><div className="session-title">{session.title || "Phiên live"}</div><div className="session-time">{fmtTime(session.startTime)}</div></td>
       <td>{isLive ? <span className="badge-live"><span className="dot-pulse"/>LIVE</span> : <span className="badge-done">Đã kết thúc</span>}</td>
       <td className="num right">{fmtNum(session.views)}</td>
@@ -878,6 +881,7 @@
     const [activeAccount, setActiveAccount] = useState("all");
     const [ownerFilter,   setOwnerFilter]   = useState("all"); // "all" | tên | "__none__"
     const [cartFilter,    setCartFilter]    = useState("all"); // "all" | giá trị giỏ | "__none__"
+    const [zaloFilter,    setZaloFilter]    = useState("all"); // "all" | tên nhóm zalo | "__none__"
     const [statusFilter,  setStatusFilter]  = useState("all");
     const [searchQ,       setSearchQ]       = useState("");
     const [dateFrom,      setDateFrom]      = useState("");
@@ -946,6 +950,7 @@
     const isLive0   = a => isAccLive(a) && (a.sessions||[]).filter(s => s.status === 1).every(s => !(s.confirmedSales > 0));
     const matchOwner = o => ownerFilter === "all" || (ownerFilter === "__none__" ? !o : o === ownerFilter);
     const matchCart  = c => cartFilter  === "all" || (cartFilter  === "__none__" ? !c : String(c) === cartFilter);
+    const matchZalo  = z => zaloFilter  === "all" || (zaloFilter  === "__none__" ? !z : z === zaloFilter);
     const matchState = a => {
       switch (statusFilter) {
         case "live":    return isAccLive(a);
@@ -971,11 +976,14 @@
     // ── DỮ LIỆU THEO TẦNG: người phụ trách → giỏ → trạng thái ──────────────
     const owners = useMemo(() => [...new Set(data.map(a=>a.owner).filter(Boolean))].sort(), [data]);
     const cartValues = useMemo(() => [...new Set(data.map(a=>a.cart).filter(Boolean))].sort((x,y)=>(parseFloat(x)||0)-(parseFloat(y)||0) || String(x).localeCompare(String(y))), [data]);
+    const zaloValues = useMemo(() => [...new Set(data.map(a=>a.zalo).filter(Boolean))].sort((x,y)=>x.localeCompare(y)), [data]);
     const ownerScoped = useMemo(() => data.filter(a => matchOwner(a.owner)), [data, ownerFilter]);
-    const scoped      = useMemo(() => ownerScoped.filter(a => matchCart(a.cart)), [ownerScoped, cartFilter]);
+    const cartScoped  = useMemo(() => ownerScoped.filter(a => matchCart(a.cart)), [ownerScoped, cartFilter]);
+    const scoped      = useMemo(() => cartScoped.filter(a => matchZalo(a.zalo)), [cartScoped, zaloFilter]);
 
     // Số đếm trên các nút: giỏ đếm theo người phụ trách; trạng thái đếm theo người phụ trách + giỏ
     const cartCounts = useMemo(() => { const m = {}; for (const a of ownerScoped) { const k = a.cart ? String(a.cart) : "__none__"; m[k] = (m[k]||0)+1; } return m; }, [ownerScoped]);
+    const zaloCounts = useMemo(() => { const m = {}; for (const a of cartScoped) { const k = a.zalo ? String(a.zalo) : "__none__"; m[k] = (m[k]||0)+1; } return m; }, [cartScoped]);
     const liveCount    = useMemo(() => scoped.filter(isAccLive).length, [scoped]);
     const notLiveCount = useMemo(() => scoped.filter(a => !a.error && !isAccLive(a)).length, [scoped]);
     const live0Count   = useMemo(() => scoped.filter(isLive0).length, [scoped]);
@@ -1028,7 +1036,7 @@
         for (const s of acc.sessions) {
           if (!sessionPass(s)) continue;
           if (q && !accHit && !(s.title||"").toLowerCase().includes(q)) continue;
-          rows.push({ ...s, _accountKey: acc.key, _owner: acc.owner, _cart: acc.cart });
+          rows.push({ ...s, _accountKey: acc.key, _owner: acc.owner, _cart: acc.cart, _zalo: acc.zalo });
         }
       }
       return rows.sort((a,b) => { const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
@@ -1042,7 +1050,7 @@
         .map(a => {
           const ss = a.sessions || [];
           const last = ss.reduce((m, s) => Math.max(m, s.startTime < 1e12 ? s.startTime*1000 : s.startTime), 0);
-          return { key:a.key, owner:a.owner||"", cart:a.cart||"", total:ss.length, last, error:a.error,
+          return { key:a.key, owner:a.owner||"", cart:a.cart||"", zalo:a.zalo||"", total:ss.length, last, error:a.error,
                    note: a.error ? a.error : (ss.length ? "Không có phiên đang LIVE" : "Chưa có phiên live nào") };
         })
         .sort((x,y) => x.owner.localeCompare(y.owner) || x.key.localeCompare(y.key));
@@ -1052,11 +1060,11 @@
     const filtered = sessionRows; // giữ tên cũ cho phần còn lại
 
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
-    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setCartFilter("all"); setActiveAccount("all"); setPage(1); };
-    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all" || cartFilter !== "all" || activeAccount !== "all";
+    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setCartFilter("all"); setZaloFilter("all"); setActiveAccount("all"); setPage(1); };
+    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all" || cartFilter !== "all" || zaloFilter !== "all" || activeAccount !== "all";
 
     // Đổi bất kỳ bộ lọc nào → về trang 1
-    useEffect(() => setPage(1), [activeAccount, ownerFilter, cartFilter, statusFilter, searchQ, dateFrom, dateTo]);
+    useEffect(() => setPage(1), [activeAccount, ownerFilter, cartFilter, zaloFilter, statusFilter, searchQ, dateFrom, dateTo]);
 
     const totalPages  = Math.max(1, Math.ceil(rowsAll.length / PAGE_SIZE));
     const currentPage = Math.min(page, totalPages);
@@ -1168,6 +1176,17 @@
           {[["all","Tất cả"],...cartValues.map(c=>[String(c),`🛒 ${c} (${cartCounts[c]||0})`]),...(cartCounts["__none__"]?[["__none__",`Chưa có (${cartCounts["__none__"]})`]]:[])].map(([v,l])=><button key={v} className={`pill ${cartFilter===v?"active":""}`} onClick={()=>setCartFilter(cartFilter===v?"all":v)}>{l}</button>)}
         </div>
         </>}
+        {zaloValues.length > 0 && <>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Nhóm Zalo:</span>
+          <select className="sort-select" value={zaloFilter} onChange={e=>setZaloFilter(e.target.value)}>
+            <option value="all">Tất cả</option>
+            {zaloValues.map(z=><option key={z} value={z}>💬 {z} ({zaloCounts[z]||0})</option>)}
+            {zaloCounts["__none__"] ? <option value="__none__">(Chưa có nhóm) ({zaloCounts["__none__"]})</option> : null}
+          </select>
+        </div>
+        </>}
         <div className="toolbar-divider"/>
         <div className="filter-group">
           <span className="filter-group-label">Từ:</span>
@@ -1194,7 +1213,7 @@
         <ExportBtn disabled={rowsAll.length===0} onClick={()=>{
           if (accountMode) {
             downloadWorkbook([[STATUS_LABEL[statusFilter], accountRows.map((r,i)=>({
-              "STT":i+1, "Tài khoản":r.key, "Người phụ trách":r.owner, "Giỏ":r.cart, "Tổng phiên":r.total,
+              "STT":i+1, "Tài khoản":r.key, "Người phụ trách":r.owner, "Giỏ":r.cart, "Nhóm Zalo":r.zalo, "Tổng phiên":r.total,
               "Phiên gần nhất": r.last ? fmtTime(r.last) : "", "Ghi chú":r.note }))]], `tai-khoan-${statusFilter}_${todayVN()}.xlsx`);
             return;
           }
@@ -1202,6 +1221,7 @@
             "Tài khoản":            s._accountKey,
             "Người phụ trách":      s._owner || "",
             "Giỏ":                  s._cart || "",
+            "Nhóm Zalo":            s._zalo || "",
             "Tiêu đề phiên":        s.title || "",
             "Trạng thái":           s.status===1 ? "Đang LIVE" : "Đã kết thúc",
             "Thời gian bắt đầu":    fmtTime(s.startTime),
@@ -1224,6 +1244,7 @@
           Hiển thị <b>{pageRows.length}</b> / <b>{rowsAll.length}</b> {accountMode?"tài khoản":"phiên live"}
           {ownerFilter!=="all"&&<> · <b style={{color:"var(--orange)"}}>{ownerFilter==="__none__"?"Chưa gán":ownerFilter}</b></>}
           {cartFilter!=="all"&&<> · 🛒 <b style={{color:"var(--orange)"}}>{cartFilter==="__none__"?"Chưa có giỏ":cartFilter}</b></>}
+          {zaloFilter!=="all"&&<> · 💬 <b style={{color:"var(--orange)"}}>{zaloFilter==="__none__"?"Chưa có nhóm":zaloFilter}</b></>}
           {statusFilter!=="all"&&<> · <b style={{color:"var(--orange)"}}>{STATUS_LABEL[statusFilter]}</b></>}
           {activeAccount!=="all"&&<> · <b style={{color:"var(--orange)"}}>{activeAccount}</b><button onClick={()=>setActiveAccount("all")} style={{marginLeft:4,background:"none",border:"none",color:"var(--text-muted)",cursor:"pointer",fontSize:11}}>✕</button></>}
           {searchQ&&<> · Tìm: <b>"{searchQ}"</b></>}
@@ -1233,16 +1254,17 @@
 
       <div className="table-wrap"><table>
         {accountMode ? <>
-          <thead><tr><th>#</th><th>Tài khoản</th><th>Phụ trách</th><th>Giỏ</th><th className="right">Tổng phiên</th><th>Phiên gần nhất</th><th>Ghi chú</th></tr></thead>
+          <thead><tr><th>#</th><th>Tài khoản</th><th>Phụ trách</th><th>Giỏ</th><th>Nhóm Zalo</th><th className="right">Tổng phiên</th><th>Phiên gần nhất</th><th>Ghi chú</th></tr></thead>
           <tbody>
             {pageRows.length === 0
-              ? <tr className="empty-row"><td colSpan={7}><span className="empty-icon">🔍</span>Không có tài khoản nào khớp bộ lọc</td></tr>
+              ? <tr className="empty-row"><td colSpan={8}><span className="empty-icon">🔍</span>Không có tài khoản nào khớp bộ lọc</td></tr>
               : pageRows.map((r,i)=><tr key={r.key} style={r.error?undefined:{cursor:"pointer"}} title={r.error?undefined:"Xem các phiên live của tài khoản này"}
                   onClick={()=>{ if (!r.error) { setActiveAccount(r.key); setStatusFilter("all"); } }}>
                   <td style={{color:"var(--text-muted)"}}>{(currentPage-1)*PAGE_SIZE+i+1}</td>
                   <td><span className="account-tag">{r.key}</span></td>
                   <td>{r.owner || <span style={{color:"var(--text-muted)"}}>Chưa gán</span>}</td>
                   <td>{r.cart || "—"}</td>
+                  <td>{r.zalo || "—"}</td>
                   <td className="num right">{r.total}</td>
                   <td>{r.last ? fmtTime(r.last) : "—"}</td>
                   <td style={{color: r.error ? "var(--red)" : "var(--text-dim)"}}>{r.note}</td>
@@ -1268,7 +1290,7 @@
                   const cmpKey = `${s._accountKey}::${s.sessionId}`;
                   const prevSession = prevSessionByKey[s._accountKey]?.get(s.sessionId) || null;
                   return <React.Fragment key={`${s._accountKey}-${s.sessionId}`}>
-                    <SessionRow session={s} accountKey={s._accountKey} owner={s._owner} cart={s._cart}
+                    <SessionRow session={s} accountKey={s._accountKey} owner={s._owner} cart={s._cart} zalo={s._zalo}
                       onOpenProducts={openProducts} onToggleCompare={toggleCompare}
                       compareActive={compareOpenKey===cmpKey} hasPrev={!!prevSession}/>
                     {compareOpenKey===cmpKey && <CompareRow accountKey={s._accountKey} session={s} prevSession={prevSession}

@@ -164,6 +164,7 @@ app.get("/api/live-alerts/test", async (req, res) => {
 // server (trước khi lần đọc sheet đầu tiên hoàn tất) hoặc khi sheet lỗi.
 let OWNERS = {};
 let CARTS  = {}; // { account: "100" | "500" | ... } — cột GIỎ trên tab PHỤ TRÁCH
+let ZALOS  = {}; // { account: "Hợp Tác Live_..." } — cột NHÓM ZALO trên tab PHỤ TRÁCH
 let ownersSource = "file"; // "file" (owners.json, tạm) | "sheet" (đã đồng bộ từ Google Sheet)
 let ownersLastSync = null;
 try {
@@ -190,16 +191,24 @@ const getCart = (key) => {
     if (_cartNormFor !== CARTS) { _cartNorm = {}; for (const [k, c] of Object.entries(CARTS)) _cartNorm[normKey(k)] = c; _cartNormFor = CARTS; }
     return _cartNorm[normKey(key)] ?? null;
 };
+let _zaloNormFor = null, _zaloNorm = {};
+const getZalo = (key) => {
+    if (ZALOS[key] != null) return ZALOS[key];
+    if (_zaloNormFor !== ZALOS) { _zaloNorm = {}; for (const [k, z] of Object.entries(ZALOS)) _zaloNorm[normKey(k)] = z; _zaloNormFor = ZALOS; }
+    return _zaloNorm[normKey(key)] ?? null;
+};
 
 // Đọc lại mapping owner từ tab PHỤ TRÁCH trên Google Sheet và GHI ĐÈ toàn bộ
 // OWNERS trong bộ nhớ. Nếu đọc sheet lỗi (mất mạng, sheet đổi cấu trúc, v.v.)
 // thì GIỮ NGUYÊN mapping cũ đang có (không xoá dữ liệu tốt vì 1 lần lỗi).
 async function refreshOwnersFromSheet() {
     try {
-        const { map, carts, count, skipped, cartColFound } = await readOwnersFromSheet();
+        const { map, carts, zalos, count, skipped, cartColFound, zaloColFound } = await readOwnersFromSheet();
         OWNERS = map;
         CARTS  = carts || {};
+        ZALOS  = zalos || {};
         if (!cartColFound) console.warn("⚠️  [Owners] Không thấy cột \"GIỎ\" trong tab PHỤ TRÁCH — bỏ qua bộ lọc giỏ");
+        if (!zaloColFound) console.warn("⚠️  [Owners] Không thấy cột \"NHÓM ZALO\" trong tab PHỤ TRÁCH — bỏ qua nhóm Zalo");
         ownersSource = "sheet";
         ownersLastSync = new Date();
         console.log(`✅ [Owners] Đồng bộ ${count} mapping từ tab PHỤ TRÁCH (bỏ qua ${skipped} dòng placeholder: Hợp Tác Live.../ACC MỚI)`);
@@ -1231,7 +1240,7 @@ app.get("/api/stats", async (req, res) => {
         // Concurrency giới hạn (không phải tuần tự, không phải song song vô hạn)
         // + jitter ngẫu nhiên + backoff thích ứng nếu tỉ lệ lỗi tăng đột biến
         const settled = await runPool(accounts, fetchAccount, CONCURRENCY, statsBackoff);
-        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), cart: getCart(r.key) }));
+        const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), cart: getCart(r.key), zalo: getZalo(r.key) }));
 
         console.log(`✅ Stats: ${results.length} accounts in ${Date.now() - t0}ms`);
         statsCache.data = results; statsCache.at = Date.now();
