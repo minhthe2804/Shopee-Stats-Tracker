@@ -185,6 +185,19 @@ function ownersNormMap() {
     return _normMap;
 }
 const getOwner = (key) => OWNERS[key] || ownersNormMap()[normKey(key)] || null;
+
+// Acc có mặt trên tab PHỤ TRÁCH (OWNERS, nguồn Sheet) nhưng KHÔNG có document
+// nào trong Firestore collection "cookies" (tức là chưa từng bấm "thêm cookie"
+// cho acc đó dù chỉ 1 lần) — khác với acc ĐÃ có document nhưng cookie rỗng/thiếu
+// SPC_ST (nhóm đó đã được fetchAccount()/fetchAccountCommission() tự trả về lỗi
+// "Không tìm thấy cookie SPC_ST" vì vẫn nằm trong danh sách accounts lấy từ
+// Firestore). Nhóm "chưa add cookie bao giờ" này trước nay bị lọt hoàn toàn
+// khỏi mọi chỗ dùng accounts (kể cả export Excel) vì vòng lặp luôn bắt đầu từ
+// accounts trong Firestore, không bao giờ đối chiếu ngược lại Sheet.
+function getSheetAccountsMissingFromFirestore(firestoreAccounts) {
+    const fsNorm = new Set(firestoreAccounts.map((a) => normKey(a.key)).filter(Boolean));
+    return Object.keys(OWNERS).filter((k) => !fsNorm.has(normKey(k)));
+}
 let _cartNormFor = null, _cartNorm = {};
 const getCart = (key) => {
     if (CARTS[key] != null) return CARTS[key];
@@ -238,9 +251,8 @@ app.get("/api/owners-debug", async (req, res) => {
     try {
         const accounts = await getAccountsFromFirestore();
         const fsKeys = accounts.map(a => a.key).filter(Boolean);
-        const fsNorm = new Set(fsKeys.map(normKey));
         const noOwner = fsKeys.filter(k => !getOwner(k));
-        const sheetNotInFirestore = Object.keys(OWNERS).filter(k => !fsNorm.has(normKey(k)));
+        const sheetNotInFirestore = getSheetAccountsMissingFromFirestore(accounts);
         const dup = {};
         for (const k of Object.keys(OWNERS)) { const n = normKey(k); (dup[n] = dup[n] || []).push(k); }
         const duplicates = Object.values(dup).filter(v => v.length > 1);
@@ -1316,6 +1328,23 @@ async function getCommissionForDate(dateStr, force = false) {
     const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
     const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), ownerVideo: getOwnerVideo(r.key) }));
 
+    // Bổ sung acc có trên Sheet nhưng CHƯA TỪNG add cookie (không có document
+    // nào trong Firestore) — nếu không thêm thủ công ở đây, nhóm acc này sẽ
+    // không nằm trong `results` nên không bao giờ xuất hiện trong export Excel
+    // (kể cả ở phần "⚠ TÀI KHOẢN LỖI"), dù acc đang tồn tại và có người phụ
+    // trách trên Sheet. Đánh dấu lỗi riêng để phân biệt với lỗi "Không tìm
+    // thấy cookie SPC_ST" (acc đã có document, chỉ là cookie rỗng/thiếu field).
+    for (const sheetKey of getSheetAccountsMissingFromFirestore(accounts)) {
+        results.push({
+            key: sheetKey,
+            error: "Chưa add cookie (chưa có trong hệ thống)",
+            commission: 0, commissionVideo: 0, commissionLive: 0, commissionOther: 0,
+            orders: [],
+            owner: getOwner(sheetKey),
+            ownerVideo: getOwnerVideo(sheetKey),
+        });
+    }
+
     console.log(`✅ Commission [${dateStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 
     commCache[cacheKey] = { data: results, at: Date.now() };
@@ -1362,6 +1391,18 @@ async function getCommissionForRange(fromStr, toStr, force = false) {
 
     const settled = await runPool(accounts, (a) => fetchAccountCommission(a, start, end), CONCURRENCY, commBackoff);
     const results = settled.filter(Boolean).map(r => ({ ...r, owner: getOwner(r.key), ownerVideo: getOwnerVideo(r.key) }));
+
+    // Xem giải thích ở getCommissionForDate() — cùng lý do, cùng cách bổ sung.
+    for (const sheetKey of getSheetAccountsMissingFromFirestore(accounts)) {
+        results.push({
+            key: sheetKey,
+            error: "Chưa add cookie (chưa có trong hệ thống)",
+            commission: 0, commissionVideo: 0, commissionLive: 0, commissionOther: 0,
+            orders: [],
+            owner: getOwner(sheetKey),
+            ownerVideo: getOwnerVideo(sheetKey),
+        });
+    }
 
     console.log(`✅ Commission [${fromStr} → ${toStr}]: ${results.length} accounts in ${Date.now() - t0}ms`);
 
