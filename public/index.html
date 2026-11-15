@@ -421,6 +421,17 @@
     const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
     return h > 0 ? `${h}g ${m}p` : `${m} phút`;
   };
+  // "Đã không live bao lâu" — tính từ mốc kết thúc phiên live gần nhất đến
+  // hiện tại. ms=null (chưa từng có phiên nào) -> trả "Chưa từng live".
+  const fmtIdle = ms => {
+    if (ms == null) return "Chưa từng live";
+    if (ms < 60000) return "Vừa xong";
+    const days = Math.floor(ms / 86400000);
+    const hours = Math.floor((ms % 86400000) / 3600000);
+    if (days > 0) return hours > 0 ? `${days} ngày ${hours} giờ` : `${days} ngày`;
+    const mins = Math.floor((ms % 3600000) / 60000);
+    return hours > 0 ? `${hours} giờ ${mins} phút` : `${mins} phút`;
+  };
   const fmtK = v => {
     if (!v) return "—";
     if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + "M";
@@ -894,6 +905,8 @@
     const [searchQ,       setSearchQ]       = useState("");
     const [dateFrom,      setDateFrom]      = useState("");
     const [dateTo,        setDateTo]        = useState("");
+    const [idleFilter,    setIdleFilter]    = useState("all"); // "all" | "3" | "7" | "15" | "30" | "never" — chỉ dùng cho tab "Không LIVE"
+    const [idleSortDir,   setIdleSortDir]   = useState("recent"); // "recent" (mới live gần đây lên đầu) | "idle" (không live lâu nhất lên đầu)
     const [sortField,     setSortField]     = useState("startTime");
     const [sortDir,       setSortDir]       = useState("desc");
     const [page,          setPage]          = useState(1);
@@ -901,6 +914,25 @@
     const [productModal,  setProductModal]  = useState(null); // { accountKey, sessionId, sessionTitle }
     const [compareOpenKey, setCompareOpenKey] = useState(null); // `${accountKey}::${sessionId}` đang mở so sánh
     const [clickTotals,   setClickTotals]   = useState({});    // `${accountKey}::${sessionId}` -> {state, total|error}
+
+    // ── Kiểm tra thêm lịch sử phiên live CŨ (liveList/v2), CHỈ khi bấm nút ──
+    // Mặc định bảng "Không LIVE" vẫn chỉ hiển thị số phiên như /api/stats trả
+    // về (vài phiên gần nhất) — không tự gọi thêm gì để tránh tăng tải lên
+    // Shopee mỗi vòng quét. Bấm nút mới gọi GET /api/account/:account/full-history.
+    // key -> { loading, sessions, addedFromHistory, error }
+    const [historyCheck, setHistoryCheck] = useState({});
+    const checkFullHistory = useCallback(async (key) => {
+      setHistoryCheck(h => ({ ...h, [key]: { ...(h[key]||{}), loading: true, error: null } }));
+      try {
+        const res  = await fetch(`/api/account/${encodeURIComponent(key)}/full-history`);
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || "Lỗi không xác định");
+        setHistoryCheck(h => ({ ...h, [key]: { loading: false, sessions: json.sessions || [], addedFromHistory: json.addedFromHistory || 0,
+          checkedBackDays: json.checkedBackDays || 0, reachedMax: !!json.reachedMax, error: null } }));
+      } catch (err) {
+        setHistoryCheck(h => ({ ...h, [key]: { loading: false, error: err.message || "Lỗi kiểm tra" } }));
+      }
+    }, []);
 
     // ── Quản lý cookie Creator/Affiliate (collection "cookies", SPC_ST) nhập tay ──
     const [showCookieMgr,  setShowCookieMgr]  = useState(false);
@@ -1113,20 +1145,51 @@
       return scoped
         .filter(a => matchState(a) && (activeAccount === "all" || a.key === activeAccount) && (!q || (a.key||"").toLowerCase().includes(q)))
         .map(a => {
-          const ss = a.sessions || [];
-          const last = ss.reduce((m, s) => Math.max(m, s.startTime < 1e12 ? s.startTime*1000 : s.startTime), 0);
-          return { key:a.key, owner:a.owner||"", cart:a.cart||"", zalo:a.zalo||"", total:ss.length, last, error:a.error,
-                   note: a.error ? a.error : (ss.length ? "Không có phiên đang LIVE" : "Chưa có phiên live nào") };
+          const hc = historyCheck[a.key];
+          // Mặc định dùng đúng sessions từ /api/stats (vài phiên gần nhất).
+          // Chỉ khi người dùng đã bấm "Kiểm tra lịch sử" cho tài khoản này và
+          // có kết quả thành công thì mới dùng danh sách đã gộp thêm phiên cũ.
+          const ss = (hc && !hc.loading && !hc.error && hc.sessions) ? hc.sessions : (a.sessions || []);
+          // "last" = thời điểm phiên live GẦN NHẤT của tài khoản này KẾT THÚC
+          // (startTime + duration), không phải lúc nó bắt đầu — để tài khoản
+          // nào vừa mới rớt live/tắt live gần đây nhất lên đầu bảng, đúng ý
+          // nghĩa "mới xuống live gần đây nhất".
+          const last = ss.reduce((m, s) => {
+            const start = s.startTime < 1e12 ? s.startTime * 1000 : s.startTime;
+            const end = start + (s.duration || 0);
+            return Math.max(m, end);
+          }, 0);
+          // idleMs = đã bao lâu kể từ lần live gần nhất; null = chưa từng có phiên nào.
+          const idleMs = last ? (Date.now() - last) : null;
+          return { key:a.key, owner:a.owner||"", cart:a.cart||"", zalo:a.zalo||"", total:ss.length, last, idleMs, error:a.error,
+                   note: a.error ? a.error : (ss.length ? "Không có phiên đang LIVE" : "Chưa có phiên live nào"),
+                   historyState: hc || null };
         })
-        .sort((x,y) => x.owner.localeCompare(y.owner) || x.key.localeCompare(y.key));
-    }, [scoped, statusFilter, activeAccount, q]);
+        // Chỉ áp dụng lọc "không live bao lâu" cho tab Không LIVE.
+        .filter(r => {
+          if (statusFilter !== "notlive" || idleFilter === "all") return true;
+          if (idleFilter === "never") return r.idleMs == null;
+          return r.idleMs != null && r.idleMs >= Number(idleFilter) * 86400000;
+        })
+        // idleSortDir="recent": tài khoản vừa xuống live gần đây nhất lên đầu
+        // (last giảm dần) — mặc định cũ. idleSortDir="idle": không live lâu
+        // nhất (idleMs lớn nhất) lên đầu, tài khoản chưa từng live (idleMs=null)
+        // coi như "lâu nhất" nên xếp đầu luôn.
+        .sort((x,y) => {
+          if (idleSortDir === "idle") {
+            const xi = x.idleMs == null ? Infinity : x.idleMs, yi = y.idleMs == null ? Infinity : y.idleMs;
+            return (yi - xi) || x.owner.localeCompare(y.owner) || x.key.localeCompare(y.key);
+          }
+          return (y.last - x.last) || x.owner.localeCompare(y.owner) || x.key.localeCompare(y.key);
+        });
+    }, [scoped, statusFilter, activeAccount, q, historyCheck, idleFilter, idleSortDir]);
 
     const rowsAll = accountMode ? accountRows : sessionRows;
     const filtered = sessionRows; // giữ tên cũ cho phần còn lại
 
     const handleSort = f => { if(sortField===f) setSortDir(d=>d==="desc"?"asc":"desc"); else{setSortField(f);setSortDir("desc");} setPage(1); };
-    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setCartFilter("all"); setZaloFilter("all"); setActiveAccount("all"); setPage(1); };
-    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all" || cartFilter !== "all" || zaloFilter !== "all" || activeAccount !== "all";
+    const resetFilters = () => { setSearchQ(""); setStatusFilter("all"); setDateFrom(""); setDateTo(""); setOwnerFilter("all"); setCartFilter("all"); setZaloFilter("all"); setActiveAccount("all"); setIdleFilter("all"); setIdleSortDir("recent"); setPage(1); };
+    const hasFilters = searchQ || statusFilter !== "all" || dateFrom || dateTo || ownerFilter !== "all" || cartFilter !== "all" || zaloFilter !== "all" || activeAccount !== "all" || idleFilter !== "all";
 
     // Đổi bất kỳ bộ lọc nào → về trang 1
     useEffect(() => setPage(1), [activeAccount, ownerFilter, cartFilter, zaloFilter, statusFilter, searchQ, dateFrom, dateTo]);
@@ -1292,12 +1355,28 @@
           </select>
         </div>
         </>}
+        {statusFilter === "notlive" && <>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Không live đã:</span>
+          {[["all","Tất cả"],["3","≥ 3 ngày"],["7","≥ 7 ngày"],["15","≥ 15 ngày"],["30","≥ 30 ngày"],["never","Chưa từng live"]]
+            .map(([v,l])=><button key={v} className={`pill ${idleFilter===v?"active":""}`} onClick={()=>setIdleFilter(idleFilter===v?"all":v)}>{l}</button>)}
+        </div>
+        <div className="toolbar-divider"/>
+        <div className="filter-group">
+          <span className="filter-group-label">Sắp xếp:</span>
+          <button className="sort-dir-btn" onClick={()=>setIdleSortDir(d=>d==="recent"?"idle":"recent")}>
+            {idleSortDir==="recent" ? "▼ Mới live gần đây nhất" : "▲ Không live lâu nhất"}
+          </button>
+        </div>
+        </>}
         <div className="toolbar-divider"/>
         <div className="filter-group">
           <span className="filter-group-label">Từ:</span>
           <input type="date" className="date-input" value={dateFrom} disabled={accountMode} onChange={e=>setDateFrom(e.target.value)}/>
           <span className="filter-group-label">đến:</span>
           <input type="date" className="date-input" value={dateTo} disabled={accountMode} onChange={e=>setDateTo(e.target.value)}/>
+          {(dateFrom||dateTo) && <button className="pill" disabled={accountMode} onClick={()=>{setDateFrom("");setDateTo("");}}>✕ Xoá</button>}
         </div>
         <div className="toolbar-divider"/>
         <div className="filter-group">
@@ -1319,7 +1398,7 @@
           if (accountMode) {
             downloadWorkbook([[STATUS_LABEL[statusFilter], accountRows.map((r,i)=>({
               "STT":i+1, "Tài khoản":r.key, "Người phụ trách":r.owner, "Giỏ":r.cart, "Nhóm Zalo":r.zalo, "Tổng phiên":r.total,
-              "Phiên gần nhất": r.last ? fmtTime(r.last) : "", "Ghi chú":r.note }))]], `tai-khoan-${statusFilter}_${todayVN()}.xlsx`);
+              "Phiên gần nhất": r.last ? fmtTime(r.last) : "", "Không live đã": fmtIdle(r.idleMs), "Ghi chú":r.note }))]], `tai-khoan-${statusFilter}_${todayVN()}.xlsx`);
             return;
           }
           const rows = sessionRows.map(s => ({
@@ -1359,20 +1438,39 @@
 
       <div className="table-wrap"><table>
         {accountMode ? <>
-          <thead><tr><th>#</th><th>Tài khoản</th><th>Phụ trách</th><th>Giỏ</th><th>Nhóm Zalo</th><th className="right">Tổng phiên</th><th>Phiên gần nhất</th><th>Ghi chú</th></tr></thead>
+          <thead><tr><th>#</th><th>Tài khoản</th><th>Phụ trách</th><th>Giỏ</th><th>Nhóm Zalo</th><th className="right">Tổng phiên</th><th>Phiên gần nhất</th><th>Không live đã</th><th>Ghi chú</th><th>Lịch sử cũ</th></tr></thead>
           <tbody>
             {pageRows.length === 0
-              ? <tr className="empty-row"><td colSpan={8}><span className="empty-icon">🔍</span>Không có tài khoản nào khớp bộ lọc</td></tr>
-              : pageRows.map((r,i)=><tr key={r.key} style={r.error?undefined:{cursor:"pointer"}} title={r.error?undefined:"Xem các phiên live của tài khoản này"}
-                  onClick={()=>{ if (!r.error) { setActiveAccount(r.key); setStatusFilter("all"); } }}>
+              ? <tr className="empty-row"><td colSpan={10}><span className="empty-icon">🔍</span>Không có tài khoản nào khớp bộ lọc</td></tr>
+              : pageRows.map((r,i)=><tr key={r.key}>
                   <td style={{color:"var(--text-muted)"}}>{(currentPage-1)*PAGE_SIZE+i+1}</td>
-                  <td><span className="account-tag">{r.key}</span></td>
+                  <td style={r.error?undefined:{cursor:"pointer"}} title={r.error?undefined:"Xem các phiên live của tài khoản này"}
+                      onClick={()=>{ if (!r.error) { setActiveAccount(r.key); setStatusFilter("all"); } }}>
+                    <span className="account-tag">{r.key}</span>
+                  </td>
                   <td>{r.owner || <span style={{color:"var(--text-muted)"}}>Chưa gán</span>}</td>
                   <td>{r.cart || "—"}</td>
                   <td>{r.zalo || "—"}</td>
                   <td className="num right">{r.total}</td>
                   <td>{r.last ? fmtTime(r.last) : "—"}</td>
+                  <td style={{color: r.idleMs==null ? "var(--text-muted)" : (r.idleMs >= 7*86400000 ? "var(--red)" : "var(--text-dim)")}}>{fmtIdle(r.idleMs)}</td>
                   <td style={{color: r.error ? "var(--red)" : "var(--text-dim)"}}>{r.note}</td>
+                  <td onClick={e=>e.stopPropagation()}>
+                    {(() => {
+                      const linkBtnStyle = {fontSize:11,background:"none",border:"none",color:"var(--orange)",cursor:"pointer",padding:0,textDecoration:"underline"};
+                      if (r.error) return "—";
+                      if (r.historyState?.loading) return <span style={{fontSize:11,color:"var(--text-muted)"}}>Đang kiểm tra…</span>;
+                      if (r.historyState?.error) return <span style={{fontSize:11,color:"var(--red)"}} title={r.historyState.error}>Lỗi — <button style={linkBtnStyle} onClick={()=>checkFullHistory(r.key)}>Thử lại</button></span>;
+                      if (r.historyState?.sessions) {
+                        const h = r.historyState;
+                        const label = h.addedFromHistory > 0
+                          ? `+${h.addedFromHistory} phiên cũ`
+                          : `Không có phiên nào trong ${h.checkedBackDays||0} ngày gần đây${h.reachedMax?"":""}`;
+                        return <span style={{fontSize:11,color:"var(--text-dim)"}}>{label} · <button style={linkBtnStyle} onClick={()=>checkFullHistory(r.key)}>Kiểm tra lại</button></span>;
+                      }
+                      return <button style={linkBtnStyle} onClick={()=>checkFullHistory(r.key)}>Kiểm tra thêm lịch sử</button>;
+                    })()}
+                  </td>
                 </tr>)}
           </tbody>
         </> : <>

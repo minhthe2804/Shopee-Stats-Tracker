@@ -522,6 +522,124 @@ async function fetchCreatorSessions(spcSt, page = 1, pageSize = 50) {
     return data;
 }
 
+// ── Bổ sung lịch sử phiên live CŨ hơn qua liveList/v2 ───────────────────────
+// realtime/sessionList (fetchCreatorSessions ở trên) có vẻ chỉ giữ một số
+// lượng phiên gần đây giới hạn phía Shopee (quan sát thực tế: có tài khoản
+// chỉ còn vài phiên dù đã live nhiều lần trước đó). Endpoint liveList/v2 dùng
+// tham số timeDim + endDate, và nếu lùi dần endDate theo từng cửa sổ thì lấy
+// thêm được các phiên cũ hơn. timeDim không chỉ nhận "7d" — API cũng chấp
+// nhận "15d", "30d", v.v. (đã kiểm chứng thực tế qua DevTools), nên dùng cửa
+// sổ RỘNG HƠN (mặc định 30 ngày) để lùi xa hơn với ÍT request hơn.
+// Response có cùng hình dạng phân trang (data.list/total/totalPage) và hầu
+// hết field trùng tên với realtime/sessionList (title, startTime, duration,
+// atc, viewers, status, sessionId, placedOrders, confirmedOrders,
+// confirmedSales...) nên KHÔNG cần map lại field — chỉ "views"/"conversionRate"
+// có thể null ở endpoint này, nhưng UI vốn đã xử lý giá trị null bình thường.
+//
+// LƯU Ý QUAN TRỌNG (sửa lỗi logic cũ): bản trước đây DỪNG NGAY khi gặp 1 cửa
+// sổ rỗng, với giả định "cửa sổ rỗng nghĩa là đã lùi quá mốc tài khoản bắt
+// đầu live". Giả định này SAI với đúng trường hợp hay dùng nhất của nút này:
+// một tài khoản đang "Không LIVE" (chưa live trong 7-30 ngày gần đây) nhưng
+// TỪNG live đều đặn trước đó rồi nghỉ một khoảng dài (vài tuần/tháng) — cửa
+// sổ GẦN NHẤT (gần "hôm nay" nhất) chắc chắn rỗng (vì nó không live gần đây),
+// nên code cũ dừng ngay ở bước đầu tiên và trả về RỖNG, dù phiên live cũ hơn
+// vẫn còn tồn tại. Giờ KHÔNG dừng sớm nữa — luôn lùi đủ
+// EXTENDED_HISTORY_MAX_WINDOWS cửa sổ, bỏ qua (không cộng dồn gì) các cửa sổ
+// rỗng rồi lùi tiếp, để tìm xuyên qua khoảng nghỉ dài.
+//
+// Đây là tác vụ NẶNG (luôn chạy đủ EXTENDED_HISTORY_MAX_WINDOWS request/tài
+// khoản, không dừng sớm), nên:
+//  - Chặn tối đa EXTENDED_HISTORY_MAX_WINDOWS cửa sổ × EXTENDED_HISTORY_STEP_DAYS
+//    ngày/cửa sổ (mặc định 12 × 30 ngày ≈ 1 năm) để tránh lặp vô hạn / tốn quá
+//    nhiều request nếu tài khoản thực sự chưa từng live hoặc đã nghỉ rất lâu.
+//  - Cache riêng theo tài khoản, TTL dài (mặc định 2 giờ) — fetchAccount()
+//    được gọi liên tục (mỗi 30s từ /api/stats, mỗi 10 phút từ cron cảnh báo
+//    live), nếu chạy lại việc lùi lịch sử này ở MỌI lần gọi thì tải lên
+//    Shopee sẽ tăng rất nhiều lần, dễ bị nghi ngờ bot/chặn IP.
+//  - Có jitter nhỏ giữa các cửa sổ (dùng chung jitter() đã có) để đỡ gây dồn
+//    dập khi lùi nhiều cửa sổ liên tiếp cho 1 tài khoản.
+const EXTENDED_HISTORY_STEP_DAYS   = Number(process.env.EXTENDED_HISTORY_STEP_DAYS || 30);
+const EXTENDED_HISTORY_MAX_WINDOWS = Number(process.env.EXTENDED_HISTORY_MAX_WINDOWS || 12); // 12 × 30 ngày ≈ 1 năm
+const EXTENDED_HISTORY_CACHE_TTL   = Number(process.env.EXTENDED_HISTORY_CACHE_TTL_MS || 2 * 60 * 60 * 1000); // 2 giờ
+const extendedHistoryCache = {}; // key: account -> { sessions, at, checkedBackDays, reachedMax }
+
+async function fetchCreatorLiveListV2(spcSt, { page = 1, pageSize = 50, timeDim = "7d", endDate } = {}) {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), name: "", orderBy: "", sort: "", timeDim });
+    if (endDate) params.set("endDate", endDate);
+    const { data } = await axios.get(
+        `https://creator.shopee.vn/supply/api/lm/sellercenter/liveList/v2?${params.toString()}`,
+        {
+            headers: {
+                cookie: `SPC_ST=${spcSt}`,
+                referer: "https://creator.shopee.vn/",
+                "user-agent": UA,
+                accept: "application/json, text/plain, */*",
+                "accept-language": "vi-VN,vi;q=0.9,en;q=0.8",
+            },
+            timeout: 10000,
+        }
+    );
+    return data;
+}
+
+// YYYY-MM-DD theo giờ VN (tránh lệch 1 ngày do quy đổi UTC khi gần nửa đêm)
+function fmtDateVN(d) {
+    const vn = new Date(d.getTime() + 7 * 3600 * 1000);
+    return vn.toISOString().slice(0, 10);
+}
+
+async function fetchAccountExtendedHistory(spcSt) {
+    let sessions = [];
+    let cursor = new Date();
+    const timeDim = `${EXTENDED_HISTORY_STEP_DAYS}d`;
+    let windowsChecked = 0;
+    for (let i = 0; i < EXTENDED_HISTORY_MAX_WINDOWS; i++) {
+        if (i > 0) await sleep(jitter());
+        const endDate = fmtDateVN(cursor);
+        let first;
+        try {
+            first = await fetchCreatorLiveListV2(spcSt, { page: 1, pageSize: 50, timeDim, endDate });
+        } catch {
+            break; // lỗi mạng/timeout -> dừng, giữ lại những gì đã lấy được
+        }
+        windowsChecked = i + 1;
+        if (!first || first.code !== 0 || !first.data) break;
+
+        // KHÔNG dừng khi cửa sổ này rỗng — tài khoản có thể đang nghỉ live
+        // một khoảng dài (vài tuần/tháng) rồi mới tới phiên cũ hơn, nên vẫn
+        // phải lùi tiếp qua các cửa sổ rỗng để tìm xuyên qua khoảng nghỉ đó.
+        const list = first.data.list || [];
+        if (list.length) {
+            sessions = sessions.concat(list);
+            const totalPage = first.data.totalPage || 1;
+            if (totalPage > 1) {
+                const pages = Array.from({ length: totalPage - 1 }, (_, idx) => idx + 2);
+                const rest = await runPool(pages, (p) => fetchCreatorLiveListV2(spcSt, { page: p, pageSize: 50, timeDim, endDate }), Math.min(4, pages.length), null);
+                for (const r of rest) {
+                    if (r?.code === 0 && r.data?.list) sessions = sessions.concat(r.data.list);
+                }
+            }
+        }
+
+        cursor.setDate(cursor.getDate() - EXTENDED_HISTORY_STEP_DAYS); // lùi cửa sổ tiếp theo
+    }
+    // checkedBackDays: đã lùi chắc chắn tới đâu (để FE báo "không có phiên nào
+    // trong N ngày gần đây" thay vì nhầm thành "chưa từng live").
+    return { sessions, checkedBackDays: windowsChecked * EXTENDED_HISTORY_STEP_DAYS, reachedMax: windowsChecked >= EXTENDED_HISTORY_MAX_WINDOWS };
+}
+
+async function getExtendedHistoryCached(account, spcSt) {
+    const cached = extendedHistoryCache[account];
+    if (cached && Date.now() - cached.at < EXTENDED_HISTORY_CACHE_TTL) return cached;
+    try {
+        const result = await fetchAccountExtendedHistory(spcSt); // { sessions, checkedBackDays, reachedMax }
+        extendedHistoryCache[account] = { ...result, at: Date.now() };
+        return extendedHistoryCache[account];
+    } catch {
+        return cached || { sessions: [], checkedBackDays: 0, reachedMax: false }; // lỗi thì dùng tạm cache cũ (nếu có) thay vì mất hẳn dữ liệu
+    }
+}
+
 async function fetchAccount(account) {
     if (account.deactive === true) return null;
     const spcSt = getSpcStCookie(account);
@@ -545,11 +663,64 @@ async function fetchAccount(account) {
             }
         }
 
+        // LƯU Ý: KHÔNG tự động gọi thêm liveList/v2 (lấy lịch sử cũ) ở đây nữa —
+        // mặc định vẫn chỉ hiển thị đúng những phiên realtime/sessionList trả
+        // về (thường là vài phiên gần nhất), y như ban đầu. Việc lùi lịch sử
+        // cũ hơn (nặng, tốn nhiều request) chỉ chạy khi người dùng CHỦ ĐỘNG bấm
+        // nút kiểm tra trên dashboard, qua route GET /api/account/:account/full-history
+        // bên dưới (dùng lại fetchAccountExtendedHistory/getExtendedHistoryCached).
+
         return { key: account.key, error: null, total: first.data.total, sessions };
     } catch (err) {
         return { key: account.key, error: err.response ? `HTTP ${err.response.status}` : "Lỗi kết nối", sessions: [] };
     }
 }
+
+// GET /api/account/:account/full-history — CHỈ chạy khi người dùng bấm nút
+// kiểm tra thủ công trên dashboard (không chạy tự động trong vòng quét
+// /api/stats hay cron cảnh báo live, để tránh tăng tải gọi Shopee mỗi vòng
+// quét). Trả về sessions đã gộp: phiên gần đây (realtime/sessionList) +
+// phiên cũ hơn lấy qua liveList/v2 (lùi dần EXTENDED_HISTORY_STEP_DAYS
+// ngày/cửa sổ — mặc định 30 — tối đa EXTENDED_HISTORY_MAX_WINDOWS cửa sổ,
+// KHÔNG dừng sớm khi gặp cửa sổ rỗng, cache 2 giờ). ?refresh=1 để bỏ qua
+// cache và lùi lại từ đầu ngay lập tức.
+app.get("/api/account/:account/full-history", async (req, res) => {
+    try {
+        const key = String(req.params.account || "").trim();
+        if (!key) return res.status(400).json({ success: false, error: "Thiếu account" });
+
+        const accounts = await getAccountsFromFirestore();
+        const account = accounts.find((a) => a.key === key);
+        if (!account) return res.status(404).json({ success: false, error: "Không tìm thấy tài khoản" });
+
+        const spcSt = getSpcStCookie(account);
+        if (!spcSt) return res.status(400).json({ success: false, error: "Không tìm thấy cookie SPC_ST" });
+
+        if (req.query.refresh === "1") delete extendedHistoryCache[key];
+
+        const base = await fetchAccount(account); // phiên gần đây, như hiển thị mặc định
+        if (base?.error) return res.status(400).json({ success: false, error: base.error });
+
+        const { sessions: extended, checkedBackDays, reachedMax } = await getExtendedHistoryCached(key, spcSt);
+        let sessions = base?.sessions || [];
+        const seen = new Set(sessions.map((s) => s.sessionId));
+        for (const s of extended) {
+            if (!seen.has(s.sessionId)) {
+                seen.add(s.sessionId);
+                sessions.push(s);
+            }
+        }
+
+        // checkedBackDays: đã chắc chắn lùi xong tới đâu — để FE phân biệt
+        // "chưa từng live" (sessions rỗng vì tài khoản thật sự chưa từng live)
+        // với "chưa live trong N ngày gần đây, có thể còn cũ hơn nữa nhưng đã
+        // chạm giới hạn lùi tối đa" (reachedMax=true mà sessions vẫn rỗng).
+        res.json({ success: true, key, sessions, total: sessions.length, addedFromHistory: extended.length, checkedBackDays, reachedMax });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 // Chi tiết sản phẩm đang bán trong 1 phiên live (dashboard realtime)
 async function fetchSessionProducts(spcSt, sessionId, page = 1, pageSize = 100) {
