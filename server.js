@@ -5,7 +5,7 @@ import https from "https";
 import cron from "node-cron";
 import nodemailer from "nodemailer";
 import { initializeApp } from "firebase/app";
-import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDoc, where } from "firebase/firestore";
+import { getFirestore, collection, getDocs, getDocsFromServer, query, doc, setDoc, deleteDoc, where } from "firebase/firestore";
 import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
@@ -323,7 +323,16 @@ const VIOLATIONS_CACHE_TTL = 60_000;
 async function getAccountsFromFirestore() {
     const snapshot = await getDocsFromServer(query(collection(db, "cookies")));
     const accounts = [];
-    snapshot.forEach((doc) => accounts.push(doc.data()));
+    snapshot.forEach((doc) => {
+        const data = doc.data() || {};
+        // Một số document cũ (thêm qua extension/công cụ khác trước khi có
+        // nút "Lưu cookie" trên dashboard) chỉ dùng doc ID làm tên tài khoản,
+        // KHÔNG lưu field "key" bên trong — nếu không fallback về doc.id thì
+        // account.key sẽ là undefined, và mọi chỗ gọi account.key.toLowerCase()
+        // ở frontend (tìm kiếm, lọc "Lỗi cookie"/"Không LIVE"...) sẽ crash
+        // trắng/đen màn hình. Luôn đảm bảo key tồn tại và khớp doc ID thật.
+        accounts.push({ ...data, key: data.key || doc.id });
+    });
     return accounts;
 }
 
@@ -334,6 +343,103 @@ function getSpcStCookie(account) {
     );
     return cookie ? cookie.value : null;
 }
+
+// ── Cookie Creator/Affiliate (collection Firestore "cookies", cần SPC_ST) ───
+// Cho đến nay collection này chỉ được thêm qua công cụ/extension khác (không
+// qua dashboard) — 3 route dưới đây thêm đường NHẬP TAY ngay trên dashboard,
+// cùng cơ chế dán cookie như notificationCookies/violationCheckCookies
+// (xem app.post("/api/notification-cookie"...) / app.post("/api/violation-cookie"...)
+// ở dưới), nhưng ghi vào ĐÚNG collection "cookies" đang dùng cho toàn bộ tab
+// Phiên Live + Hoa Hồng — chỉ cần SPC_ST (khác 2 loại kia cần full cookie).
+// Doc ID = account key, field "value" giữ đúng cấu trúc mảng mà
+// getSpcStCookie() ở trên đọc, để không phải đổi gì ở phần đọc dữ liệu.
+function extractSpcStFromPasted(cookieStr) {
+    const s = String(cookieStr || "");
+    // Chấp nhận cả khi người dùng dán nguyên dòng "cookie: SPC_ST=...; abc=..."
+    // lẫn khi chỉ dán mỗi giá trị SPC_ST (không có dấu "=").
+    const m = s.match(/(?:^|;\s*)SPC_ST=([^;]+)/);
+    if (m) return m[1].trim();
+    const bare = s.trim();
+    return bare && !bare.includes(";") && !bare.includes(" ") ? bare : null;
+}
+
+// Lưu/cập nhật SPC_ST cho 1 tài khoản — dán tay dòng cookie đầy đủ (hoặc chỉ
+// giá trị SPC_ST) từ DevTools, upsert theo account (doc ID = account).
+app.post("/api/cookie", async (req, res) => {
+    try {
+        const { account, cookie } = req.body || {};
+        if (!account || !String(account).trim()) return res.status(400).json({ success: false, error: "Thiếu account" });
+        if (!cookie || !String(cookie).trim()) return res.status(400).json({ success: false, error: "Thiếu cookie" });
+
+        const key = String(account).trim();
+        const spcSt = extractSpcStFromPasted(cookie);
+        if (!spcSt) {
+            return res.status(400).json({ success: false, error: "Không tìm thấy SPC_ST trong nội dung đã dán — dán nguyên dòng cookie đầy đủ (hoặc chỉ giá trị SPC_ST)" });
+        }
+
+        await setDoc(
+            doc(db, "cookies", key),
+            {
+                key,
+                deactive: false,
+                value: [{ name: "SPC_ST", domain: "shopee.vn", value: spcSt }],
+                updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+        );
+
+        // Lưu xong kiểm tra thử NGAY (gọi API Shopee bằng SPC_ST vừa lưu) để
+        // biết liền cookie có dùng được không — giống cách notification-cookie/
+        // violation-cookie báo kết quả ngay sau khi lưu, không cần đợi vòng
+        // quét /api/stats tiếp theo.
+        const check = await fetchAccount({ key, deactive: false, value: [{ name: "SPC_ST", domain: "shopee.vn", value: spcSt }] });
+        res.json({
+            success: true,
+            account: key,
+            owner: getOwner(key),
+            check: check ? { error: check.error, sessionsFound: check.sessions?.length || 0 } : null,
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Danh sách account đang có trong collection "cookies" (KHÔNG trả nguyên
+// SPC_ST về client, chỉ cho biết đã có cookie hay chưa + có đọc được không).
+app.get("/api/cookie", async (req, res) => {
+    try {
+        const accounts = await getAccountsFromFirestore();
+        res.json({
+            success: true,
+            accounts: accounts.map((a) => ({
+                account: a.key,
+                owner: getOwner(a.key),
+                deactive: !!a.deactive,
+                hasSpcSt: !!getSpcStCookie(a),
+                updatedAt: a.updatedAt || null,
+            })),
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+// Xoá hẳn 1 account khỏi collection "cookies" (vd tài khoản nghỉ hẳn, không
+// còn theo dõi nữa). Để CẬP NHẬT cookie, chỉ cần gọi lại POST /api/cookie với
+// cùng account — tự ghi đè, không cần xoá trước.
+app.delete("/api/cookie/:account", async (req, res) => {
+    try {
+        const key = String(req.params.account || "").trim();
+        if (!key) return res.status(400).json({ success: false, error: "Thiếu account" });
+        await deleteDoc(doc(db, "cookies", key));
+        res.json({ success: true, account: key });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
 
