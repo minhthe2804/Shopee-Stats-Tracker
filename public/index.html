@@ -1513,6 +1513,23 @@
       return [...rows].sort((a,b)=>{ const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
     }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ, sortField, sortDir]);
 
+    // Giống hệt "filtered" ở trên nhưng KHÔNG đòi hỏi tài khoản phải có người
+    // phụ trách — dùng riêng cho nút "Xuất Excel" đơn hoa hồng để xuất được
+    // TẤT CẢ các acc (kể cả acc chưa gán người phụ trách).
+    const exportFiltered = useMemo(() => {
+      let rows = allOrders;
+      if (activeAccount !== "all") rows = rows.filter(o => o._accountKey === activeAccount);
+      if (ownerFilter !== "all") rows = rows.filter(o => o._owner === ownerFilter);
+      if (ownerVideoFilter !== "all") rows = rows.filter(o => o._ownerVideo === ownerVideoFilter);
+      if (sourceFilter === "video") rows = rows.filter(o => o.source === "video");
+      if (sourceFilter === "live")  rows = rows.filter(o => o.source === "live");
+      if (sourceFilter === "other") rows = rows.filter(o => o.source !== "video" && o.source !== "live");
+      if (statusFilter === "cancelled") rows = rows.filter(o => o.status === "cancelled");
+      if (statusFilter === "confirmed") rows = rows.filter(o => o.status !== "cancelled");
+      if (searchQ.trim()) { const q=searchQ.trim().toLowerCase(); rows=rows.filter(o=>(o.orderId||"").toLowerCase().includes(q)||(o.productName||"").toLowerCase().includes(q)||o._accountKey.toLowerCase().includes(q)); }
+      return [...rows].sort((a,b)=>{ const av=a[sortField]??0, bv=b[sortField]??0; return sortDir==="desc"?bv-av:av-bv; });
+    }, [allOrders, activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ, sortField, sortDir]);
+
     useEffect(() => setPage(1), [activeAccount, ownerFilter, ownerVideoFilter, sourceFilter, statusFilter, searchQ]);
 
     const totalPages  = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
@@ -1759,7 +1776,7 @@
           {viewMode==="orders" ? <>
           <ExportBtn
             label={`Xuất Excel${sourceFilter!=="all"?` (${sourceFilter==="video"?"Video":sourceFilter==="live"?"Live":"Khác"})`:""}`}
-            disabled={filtered.length===0}
+            disabled={exportFiltered.length===0}
             onClick={async ()=>{
               // Cột cố định — "Nguồn" LUÔN chỉ chứa Shopee Video/Shopee Live/Khác
               // (không bao giờ bị nhồi nhãn "Tổng..."); mọi dòng tổng được đánh
@@ -1812,7 +1829,7 @@
               const srcOf = (o) => o.source === "video" ? "video" : o.source === "live" ? "live" : "other";
               const acctOrder = [];
               const byAccount = {};
-              for (const o of filtered) {
+              for (const o of exportFiltered) {
                 if (!byAccount[o._accountKey]) { byAccount[o._accountKey] = []; acctOrder.push(o._accountKey); }
                 byAccount[o._accountKey].push(o);
               }
@@ -1852,10 +1869,9 @@
               // TK" (acc.error ? `Lỗi: ${acc.error}` : "OK"), tôn trọng cùng bộ
               // lọc tài khoản/người phụ trách đang chọn (không áp sourceFilter
               // vì lỗi cookie không thuộc về 1 nguồn cụ thể nào).
-              // Cũng bỏ acc chưa gán người phụ trách, giống hệt điều kiện đang
-              // áp cho toàn bộ đơn ở trên (dòng filter `o._owner` của `filtered`)
-              // — tránh liệt kê 1 acc lỗi cookie nhưng lại chưa ai phụ trách.
-              let errAccounts = data.filter(a => a.error && a.owner);
+              // Xuất tất cả acc lỗi cookie, không cần điều kiện đã có người
+              // phụ trách (khác với "filtered" dùng ở màn hình xem đơn).
+              let errAccounts = data.filter(a => a.error);
               if (activeAccount !== "all")   errAccounts = errAccounts.filter(a=>a.key===activeAccount);
               if (ownerFilter !== "all")      errAccounts = errAccounts.filter(a=>a.owner===ownerFilter);
               if (ownerVideoFilter !== "all") errAccounts = errAccounts.filter(a=>a.ownerVideo===ownerVideoFilter);
