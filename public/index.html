@@ -631,6 +631,16 @@
           >
             📊 So sánh
           </button>}
+          {session.sessionId != null && <a
+            className="session-products-btn"
+            style={{textDecoration:"none"}}
+            href={`https://live.shopee.vn/share?from=live&session=${session.sessionId}&in=1`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Mở phiên live này trên Shopee"
+          >
+            🔗 Xem live
+          </a>}
         </div>
       </td>
     </tr>;
